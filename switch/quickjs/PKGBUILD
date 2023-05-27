@@ -1,0 +1,37 @@
+# Maintainer:  Dave Murphy <davem@devkitpro.org>
+# Contributor: TooTallNate <n@n8.io>
+
+pkgname=switch-quickjs
+pkgver=2021.03.27
+pkgrel=1
+pkgdesc='QuickJS is a small and embeddable Javascript engine. It supports the ES2020 specification including modules, asynchronous generators, proxies and BigInt.'
+arch=('any')
+url='https://bellard.org/quickjs/'
+license=(MIT)
+options=(!strip libtool staticlibs)
+depends=()
+groups=('switch-portlibs')
+makedepends=('switch-pkg-config' 'dkp-toolchain-vars')
+source=("https://github.com/TooTallNate/quickjs/archive/refs/heads/devkitA64.tar.gz")
+sha256sums=(
+    'fb4a3494365c83d99f305a8e352098f6639a355d885cb36f3d5acdc1a7694f80'
+)
+
+build() {
+    cd quickjs-devkitA64
+
+    source /opt/devkitpro/switchvars.sh
+
+    make CROSS_PREFIX=aarch64-none-elf- libquickjs.a
+}
+
+package() {
+    cd quickjs-devkitA64
+
+    source /opt/devkitpro/switchvars.sh
+
+	mkdir -p "$pkgdir/$PORTLIBS_PREFIX/lib/quickjs" "$pkgdir/$PORTLIBS_PREFIX/include/quickjs"
+	install -m644 libquickjs.a "$pkgdir/$PORTLIBS_PREFIX/lib/quickjs"
+	#install -m644 libquickjs.lto.a "$pkgdir/$PORTLIBS_PREFIX/lib/quickjs"
+	install -m644 quickjs.h quickjs-libc.h "$pkgdir/$PORTLIBS_PREFIX/include/quickjs"
+}

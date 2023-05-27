@@ -26,4 +26,12 @@ RUN dkp-makepkg
 USER root
 RUN cp -rv /packages/cairo/pkg/switch-cairo/opt/* /opt
 
+USER user
+WORKDIR /packages/quickjs
+COPY switch/quickjs/PKGBUILD .
+RUN dkp-makepkg
+
+USER root
+RUN cp -rv /packages/quickjs/pkg/switch-quickjs/opt/* /opt
+
 WORKDIR /
