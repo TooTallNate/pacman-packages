@@ -1,10 +1,6 @@
 name: Docker Image CI
 
-on:
-  push:
-    branches: [ "nxjs" ]
-  pull_request:
-    branches: [ "nxjs" ]
+on: push
 
 jobs:
 
