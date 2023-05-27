@@ -5,10 +5,21 @@ RUN apt-get update && apt-get install -y \
     file \
     vim-nox \
     zstd
-RUN dkp-pacman -S dkp-toolchain-vars --noconfirm
+
 RUN useradd user
+
 RUN mkdir -p /packages/pixman /packages/cairo /packages/quickjs
 RUN chmod -R 777 /packages
+
+COPY dkp-toolchain-vars /dkp-toolchain-vars
+RUN chmod -R 777 /dkp-toolchain-vars
+
+USER user
+WORKDIR /dkp-toolchain-vars
+RUN dkp-makepkg
+
+USER root
+RUN dkp-pacman -U dkp-toolchain-vars-*.pkg.tar.zst --noconfirm
 
 USER user
 WORKDIR /packages/pixman
