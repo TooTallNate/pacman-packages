@@ -12,13 +12,13 @@ options=(!strip libtool staticlibs)
 depends=()
 groups=('switch-portlibs')
 makedepends=('switch-pkg-config' 'dkp-toolchain-vars')
-source=("https://github.com/TooTallNate/quickjs/archive/refs/heads/devkitA64.tar.gz")
+source=("https://github.com/TooTallNate/quickjs/archive/8add8ffc6efbb2128a0e81a7a5652d352e7fec7b.tar.gz")
 sha256sums=(
-    'fb4a3494365c83d99f305a8e352098f6639a355d885cb36f3d5acdc1a7694f80'
+    '3ee21de50b93022ae22513d63374e66156a0c36668c46575d05d300fdbf93302'
 )
 
 build() {
-    cd quickjs-devkitA64
+    cd quickjs-*
 
     source /opt/devkitpro/switchvars.sh
 
@@ -26,12 +26,12 @@ build() {
 }
 
 package() {
-    cd quickjs-devkitA64
+    cd quickjs-*
 
     source /opt/devkitpro/switchvars.sh
 
-    mkdir -p "$pkgdir/$PORTLIBS_PREFIX/lib/quickjs" "$pkgdir/$PORTLIBS_PREFIX/include/quickjs"
-    install -m644 libquickjs.a "$pkgdir/$PORTLIBS_PREFIX/lib/quickjs"
+    mkdir -p "$pkgdir/$PORTLIBS_PREFIX/lib" "$pkgdir/$PORTLIBS_PREFIX/include/quickjs"
+    install -m644 libquickjs.a "$pkgdir/$PORTLIBS_PREFIX/lib"
     #install -m644 libquickjs.lto.a "$pkgdir/$PORTLIBS_PREFIX/lib/quickjs"
     install -m644 quickjs.h quickjs-libc.h "$pkgdir/$PORTLIBS_PREFIX/include/quickjs"
 }
