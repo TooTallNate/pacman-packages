@@ -19,7 +19,7 @@ WORKDIR /dkp-toolchain-vars
 RUN dkp-makepkg
 
 USER root
-RUN dkp-pacman -U dkp-toolchain-vars-*.pkg.tar.zst --noconfirm
+RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 USER user
 WORKDIR /packages/pixman
@@ -27,7 +27,7 @@ COPY switch/pixman/PKGBUILD .
 RUN dkp-makepkg
 
 USER root
-RUN cp -rv /packages/pixman/pkg/switch-pixman/opt/* /opt
+RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 USER user
 WORKDIR /packages/cairo
@@ -35,7 +35,7 @@ COPY switch/cairo/PKGBUILD .
 RUN dkp-makepkg
 
 USER root
-RUN cp -rv /packages/cairo/pkg/switch-cairo/opt/* /opt
+RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 USER user
 WORKDIR /packages/quickjs
@@ -43,6 +43,7 @@ COPY switch/quickjs/PKGBUILD .
 RUN dkp-makepkg
 
 USER root
-RUN cp -rv /packages/quickjs/pkg/switch-quickjs/opt/* /opt
+RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 WORKDIR /
+RUN rm -rf /dkp-toolchain-vars /packages
