@@ -1,0 +1,51 @@
+# Maintainer:  Dave Murphy <davem@devkitpro.org>
+# Contributor: Nathan Rajlich <n@n8.io>
+
+pkgbasename=wasm3
+pkgname=switch-$pkgbasename
+pkgver=0.5.0
+pkgrel=1
+pkgdesc='A fast WebAssembly interpreter and the most universal WASM runtime.'
+arch=('any')
+url='https://github.com/wasm3/wasm3/'
+license=('MIT')
+options=(!strip libtool staticlibs)
+source=(
+    "https://github.com/wasm3/wasm3/archive/refs/tags/v${pkgver}.tar.gz"
+)
+sha256sums=(
+    'b778dd72ee2251f4fe9e2666ee3fe1c26f06f517c3ffce572416db067546536c'
+)
+makedepends=('dkp-toolchain-vars' 'switch-cmake')
+groups=('switch-portlibs')
+build() {
+    cd ${pkgbasename}-${pkgver}
+
+    source /opt/devkitpro/switchvars.sh
+
+    aarch64-none-elf-cmake \
+        -G"Unix Makefiles" \
+        -DCMAKE_INSTALL_PREFIX=$PORTLIBS_PREFIX \
+        -DBUILD_NATIVE=OFF \
+        -DBUILD_WASI=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        .
+
+    make V=1
+}
+
+package() {
+    cd ${pkgbasename}-${pkgver}
+
+    #DESTDIR="$pkgdir" cmake -P cmake_install.cmake
+    # ... or ...
+    #DESTDIR="$pkgdir" cmake --install .
+
+    # Can't figure out how to make the above work,
+    # so just copy the files manually
+    mkdir -p "$pkgdir"${PORTLIBS_PREFIX}/include
+    mkdir -p "$pkgdir"${PORTLIBS_PREFIX}/lib
+    cp -v source/wasm3*.h "$pkgdir"${PORTLIBS_PREFIX}/include
+    cp -v source/*.a "$pkgdir"${PORTLIBS_PREFIX}/lib
+}

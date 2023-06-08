@@ -45,5 +45,13 @@ RUN dkp-makepkg
 USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
+USER user
+WORKDIR /packages/wasm3
+COPY switch/wasm3/PKGBUILD .
+RUN dkp-makepkg
+
+USER root
+RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
+
 WORKDIR /
 RUN rm -rf /dkp-toolchain-vars /packages
