@@ -46,6 +46,6 @@ package() {
     # so just copy the files manually
     mkdir -p "$pkgdir"${PORTLIBS_PREFIX}/include
     mkdir -p "$pkgdir"${PORTLIBS_PREFIX}/lib
-    cp -v source/wasm3*.h "$pkgdir"${PORTLIBS_PREFIX}/include
+    cp -v source/*.h "$pkgdir"${PORTLIBS_PREFIX}/include
     cp -v source/*.a "$pkgdir"${PORTLIBS_PREFIX}/lib
 }
