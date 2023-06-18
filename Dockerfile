@@ -3,6 +3,7 @@ RUN apt-get update && apt-get install -y \
     binutils \
     fakeroot \
     file \
+    jq \
     vim-nox \
     zstd
 
