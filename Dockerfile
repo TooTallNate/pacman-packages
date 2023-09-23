@@ -4,6 +4,8 @@ RUN apt-get update && apt-get install -y \
     fakeroot \
     file \
     jq \
+    meson \
+    ninja-build \
     vim-nox \
     zstd
 

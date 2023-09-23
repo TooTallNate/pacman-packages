@@ -4,22 +4,24 @@
 pkgbasename=wasm3
 pkgname=switch-$pkgbasename
 pkgver=0.5.0
-pkgrel=1
+pkgrel=2
 pkgdesc='A fast WebAssembly interpreter and the most universal WASM runtime.'
 arch=('any')
 url='https://github.com/wasm3/wasm3/'
 license=('MIT')
 options=(!strip libtool staticlibs)
 source=(
-    "https://github.com/wasm3/wasm3/archive/refs/tags/v${pkgver}.tar.gz"
+    "https://github.com/wasm3/wasm3/archive/772f8f4648fcba75f77f894a6050db121e7651a2.tar.gz"
+    # v0.5.0 is missing some fixes / improvements compared to HEAD
+    #"https://github.com/wasm3/wasm3/archive/refs/tags/v${pkgver}.tar.gz"
 )
 sha256sums=(
-    'b778dd72ee2251f4fe9e2666ee3fe1c26f06f517c3ffce572416db067546536c'
+    '919e8ed733cfabba30c3d9480e65db502301e010985752ef7a64c7b59619667a'
 )
 makedepends=('dkp-toolchain-vars' 'switch-cmake')
 groups=('switch-portlibs')
 build() {
-    cd ${pkgbasename}-${pkgver}
+    cd ${pkgbasename}-*
 
     source /opt/devkitpro/switchvars.sh
 
@@ -36,7 +38,7 @@ build() {
 }
 
 package() {
-    cd ${pkgbasename}-${pkgver}
+    cd ${pkgbasename}-*
 
     #DESTDIR="$pkgdir" cmake -P cmake_install.cmake
     # ... or ...
