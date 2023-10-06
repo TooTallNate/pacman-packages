@@ -3,7 +3,7 @@
 
 pkgname=switch-quickjs
 pkgver=2021.03.27
-pkgrel=1
+pkgrel=2
 pkgdesc='QuickJS is a small and embeddable Javascript engine. It supports the ES2020 specification including modules, asynchronous generators, proxies and BigInt.'
 arch=('any')
 url='https://bellard.org/quickjs/'
@@ -12,9 +12,9 @@ options=(!strip libtool staticlibs)
 depends=()
 groups=('switch-portlibs')
 makedepends=('switch-pkg-config' 'dkp-toolchain-vars')
-source=("https://github.com/TooTallNate/quickjs/archive/8add8ffc6efbb2128a0e81a7a5652d352e7fec7b.tar.gz")
+source=("https://github.com/TooTallNate/quickjs/archive/2d5230a80d4439be848c3060d2ecc77da51ee941.tar.gz")
 sha256sums=(
-    '3ee21de50b93022ae22513d63374e66156a0c36668c46575d05d300fdbf93302'
+    '8fb428f9535d5a1fb56a445e9fe544a44049fc1cdbef81dfff59ad4a984cc101'
 )
 
 build() {
