@@ -41,6 +41,14 @@ USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 USER user
+WORKDIR /packages/harfbuzz
+COPY switch/harfbuzz/PKGBUILD .
+RUN dkp-makepkg
+
+USER root
+RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
+
+USER user
 WORKDIR /packages/quickjs
 COPY switch/quickjs/PKGBUILD .
 RUN dkp-makepkg
