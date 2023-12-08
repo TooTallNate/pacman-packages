@@ -4,10 +4,12 @@ RUN apt-get update && apt-get install -y \
     fakeroot \
     file \
     jq \
-    meson \
     ninja-build \
+    python3-pip \
     vim-nox \
     zstd
+
+RUN pip3 install meson
 
 RUN useradd user
 
