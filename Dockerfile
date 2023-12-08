@@ -24,6 +24,16 @@ RUN dkp-makepkg
 USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
+COPY dkp-meson-scripts /dkp-meson-scripts
+RUN chmod -R 777 /dkp-meson-scripts
+
+USER user
+WORKDIR /dkp-meson-scripts
+RUN dkp-makepkg
+
+USER root
+RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
+
 USER user
 WORKDIR /packages/pixman
 COPY switch/pixman/PKGBUILD .
