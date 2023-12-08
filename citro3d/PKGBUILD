@@ -2,8 +2,8 @@
 # Maintainer: fincs <fincs.alt1@gmail.com>
 
 pkgname=('citro3d')
-pkgver=1.7.0
-pkgrel=1
+pkgver=1.7.1
+pkgrel=2
 pkgdesc="Nintendo 3DS gpu library."
 arch=('any')
 license=('custom')
@@ -27,3 +27,5 @@ package() {
   make -C $srcdir/${pkgname}-${pkgver} DESTDIR=$pkgdir install
 
 }
+
+sha256sums=('c920515a791442e81e0c2c8867dde81bf14aca17eacb2709b4a3a3c61699250c')

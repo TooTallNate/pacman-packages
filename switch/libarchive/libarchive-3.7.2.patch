@@ -1,0 +1,96 @@
+diff --git a/libarchive/archive_read_disk_posix.c b/libarchive/archive_read_disk_posix.c
+index 8d5c32f0..0b57969d 100644
+--- a/libarchive/archive_read_disk_posix.c
++++ b/libarchive/archive_read_disk_posix.c
+@@ -99,8 +99,10 @@ __FBSDID("$FreeBSD$");
+ #include "archive_read_disk_private.h"
+ 
+ #ifndef HAVE_FCHDIR
++#ifndef __SWITCH__
+ #error fchdir function required.
+ #endif
++#endif
+ #ifndef O_BINARY
+ #define O_BINARY	0
+ #endif
+diff --git a/libarchive/archive_read_support_filter_program.c b/libarchive/archive_read_support_filter_program.c
+index 885b2c20..83ad505a 100644
+--- a/libarchive/archive_read_support_filter_program.c
++++ b/libarchive/archive_read_support_filter_program.c
+@@ -58,6 +58,13 @@ __FBSDID("$FreeBSD$");
+ #include "archive_read_private.h"
+ #include "filter_fork.h"
+ 
++#ifdef __SWITCH__
++int
++__archive_read_program(struct archive_read_filter *self, const char *cmd) {
++	return (ARCHIVE_OK);
++}
++#else
++
+ 
+ #if ARCHIVE_VERSION_NUMBER < 4000000
+ /* Deprecated; remove in libarchive 4.0 */
+@@ -494,3 +501,6 @@ program_filter_close(struct archive_read_filter *self)
+ 
+ 	return (e);
+ }
++
++#endif
++
+diff --git a/libarchive/archive_write_set_format_iso9660.c b/libarchive/archive_write_set_format_iso9660.c
+index 2a3ae07f..b93dadda 100644
+--- a/libarchive/archive_write_set_format_iso9660.c
++++ b/libarchive/archive_write_set_format_iso9660.c
+@@ -2178,9 +2178,11 @@ get_system_identitier(char *system_id, size_t size)
+ 	strncpy(system_id, "Windows", size-1);
+ 	system_id[size-1] = '\0';
+ #else
++#ifndef __SWITCH__
+ 	strncpy(system_id, "Unknown", size-1);
+ 	system_id[size-1] = '\0';
+ #endif
++#endif
+ }
+ 
+ static void
+@@ -2506,7 +2508,7 @@ get_gmoffset(struct tm *tm)
+ 
+ #if defined(HAVE__GET_TIMEZONE)
+ 	_get_timezone(&offset);
+-#elif defined(__CYGWIN__) || defined(__MINGW32__) || defined(__BORLANDC__)
++#elif defined(__CYGWIN__) || defined(__MINGW32__) || defined(__BORLANDC__) || defined(__SWITCH__)
+ 	offset = _timezone;
+ #else
+ 	offset = timezone;
+diff --git a/libarchive_fe/passphrase.c b/libarchive_fe/passphrase.c
+index 1cae6a7b..40168957 100644
+--- a/libarchive_fe/passphrase.c
++++ b/libarchive_fe/passphrase.c
+@@ -131,9 +131,12 @@ readpassphrase(const char *prompt, char *buf, size_t bufsiz, int flags)
+ #endif
+ #include <signal.h>
+ #include <string.h>
++#ifndef __SWITCH__
+ #include <termios.h>
++#endif
+ #include <unistd.h>
+ 
++#ifndef __SWITCH__
+ #ifndef _PATH_TTY
+ #define _PATH_TTY "/dev/tty"
+ #endif
+@@ -318,7 +321,12 @@ restart:
+ }
+ #endif /* _WIN32 && !__CYGWIN__ */
+ #endif /* HAVE_READPASSPHRASE */
+-
++#else
++static char* readpassphrase(const char *prompt, char *buf, size_t bufsiz, int flags)
++{
++  return NULL;
++}
++#endif /* __SWITCH__ */
+ char *
+ lafe_readpassphrase(const char *prompt, char *buf, size_t bufsiz)
+ {

@@ -9,6 +9,10 @@ function(dkp_add_embedded_binary_library target)
 		message(FATAL_ERROR "dkp_add_embedded_binary_library: must provide at least one input file")
 	endif()
 
+	if (NOT DKP_BIN2S)
+		message(FATAL_ERROR "Could not find bin2s: try installing general-tools")
+	endif()
+
 	__dkp_asm_lang(lang dkp_add_embedded_binary_library)
 	set(genfolder "${CMAKE_CURRENT_BINARY_DIR}/.dkp-generated/${target}")
 	set(intermediates "")
@@ -25,15 +29,15 @@ function(dkp_add_embedded_binary_library target)
 			endif()
 
 			add_custom_command(
-				OUTPUT "${genfolder}/${basename}.s" "${genfolder}/${basename}.h"
+				OUTPUT "${genfolder}/${basename}.S" "${genfolder}/${basename}.h"
 				COMMAND ${CMAKE_COMMAND} -E make_directory "${genfolder}"
-				COMMAND ${DKP_BIN2S} -a ${DKP_BIN2S_ALIGNMENT} -H "${genfolder}/${basename}.h" "${infile}" > "${genfolder}/${basename}.s"
+				COMMAND ${DKP_BIN2S} -a ${DKP_BIN2S_ALIGNMENT} -H "${genfolder}/${basename}.h" "${infile}" > "${genfolder}/${basename}.S"
 				DEPENDS ${indeps}
 				COMMENT "Generating binary embedding source for ${inname}"
 			)
 
-			list(APPEND intermediates "${genfolder}/${basename}.s" "${genfolder}/${basename}.h")
-			set_source_files_properties("${genfolder}/${basename}.s" PROPERTIES LANGUAGE "${lang}")
+			list(APPEND intermediates "${genfolder}/${basename}.S" "${genfolder}/${basename}.h")
+			set_source_files_properties("${genfolder}/${basename}.S" PROPERTIES LANGUAGE "${lang}")
 		endforeach()
 	endforeach()
 
