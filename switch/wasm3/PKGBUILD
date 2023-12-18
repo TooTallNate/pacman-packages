@@ -11,12 +11,10 @@ url='https://github.com/wasm3/wasm3/'
 license=('MIT')
 options=(!strip libtool staticlibs)
 source=(
-    # Using TooTallNate's fork which includes some additional APIs
-    # necessary to implement the WebAssembly JavaScript interface
-    "https://github.com/TooTallNate/wasm3/archive/67a1e830c3f403f4e6c4ccdc127171a8c29ef0ac.tar.gz"
+    "https://github.com/wasm3/wasm3/archive/7ed176d98586bf22aaa6db3b2d379af4c3cb0655.tar.gz"
 )
 sha256sums=(
-    '991e579d94c5817302b07bc1fe5136665af48cf3788beec332b23aea4c242607'
+    'a9f2168910553fd7b86276ce57ce77a64da25bb24dcd344c28824e46ab145a20'
 )
 makedepends=('dkp-toolchain-vars' 'switch-cmake')
 groups=('switch-portlibs')
