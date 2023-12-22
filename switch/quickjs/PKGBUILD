@@ -2,19 +2,19 @@
 # Contributor: TooTallNate <n@n8.io>
 
 pkgname=switch-quickjs
-pkgver=2021.03.27
-pkgrel=2
+pkgver=0.4.0dev
+pkgrel=1
 pkgdesc='QuickJS is a small and embeddable Javascript engine. It supports the ES2020 specification including modules, asynchronous generators, proxies and BigInt.'
 arch=('any')
-url='https://bellard.org/quickjs/'
+url='https://github.com/quickjs-ng/quickjs'
 license=(MIT)
 options=(!strip libtool staticlibs)
 depends=()
 groups=('switch-portlibs')
-makedepends=('switch-pkg-config' 'dkp-toolchain-vars')
-source=("https://github.com/TooTallNate/quickjs/archive/2d5230a80d4439be848c3060d2ecc77da51ee941.tar.gz")
+makedepends=('dkp-toolchain-vars' 'switch-cmake')
+source=("https://github.com/TooTallNate/quickjs-ng/archive/cfb073f19ba9b5c18ea310473af1a51a5c6e5a49.tar.gz")
 sha256sums=(
-    '8fb428f9535d5a1fb56a445e9fe544a44049fc1cdbef81dfff59ad4a984cc101'
+    '7abbff1b8f0bd2f9e04a769dc0a2b61e030587f6c293882bf5d14c0f18dc4874'
 )
 
 build() {
@@ -22,7 +22,18 @@ build() {
 
     source /opt/devkitpro/switchvars.sh
 
-    make ARMCPU=cortex-a57 ARMLINUX=yes CROSS_PREFIX=aarch64-none-elf- CFLAGS="-march=armv8-a+crc+crypto -mtune=cortex-a57 -fPIE -I/opt/devkitpro/devkitA64/aarch64-none-elf/include -DCONFIG_BIGNUM" LDFLAGS="-L/opt/devkitpro/devkitA64/aarch64-none-elf/lib" libquickjs.a
+    aarch64-none-elf-cmake \
+        -DCMAKE_INSTALL_PREFIX="$PORTLIBS_PREFIX" \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DBUILD_EXAMPLES=OFF \
+        -DBUILD_QJS_LIBC=OFF \
+        -DCMAKE_VERBOSE_MAKEFILE=TRUE \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_VERBOSE_MAKEFILE=TRUE \
+        -DDUMP_LEAKS=1 \
+        .
+
+    make qjs
 }
 
 package() {
@@ -30,8 +41,7 @@ package() {
 
     source /opt/devkitpro/switchvars.sh
 
-    mkdir -p "$pkgdir/$PORTLIBS_PREFIX/lib" "$pkgdir/$PORTLIBS_PREFIX/include/quickjs"
-    install -m644 libquickjs.a "$pkgdir/$PORTLIBS_PREFIX/lib"
-    #install -m644 libquickjs.lto.a "$pkgdir/$PORTLIBS_PREFIX/lib/quickjs"
-    install -m644 quickjs.h quickjs-libc.h "$pkgdir/$PORTLIBS_PREFIX/include/quickjs"
+    mkdir -p "$pkgdir/$PORTLIBS_PREFIX/lib" "$pkgdir/$PORTLIBS_PREFIX/include"
+    install -m644 libqjs.a "$pkgdir/$PORTLIBS_PREFIX/lib"
+    install -m644 quickjs.h "$pkgdir/$PORTLIBS_PREFIX/include"
 }
