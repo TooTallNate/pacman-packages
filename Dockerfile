@@ -77,4 +77,4 @@ USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 WORKDIR /
-RUN rm -rf /dkp-toolchain-vars /packages
+#RUN rm -rf /dkp-toolchain-vars /packages
