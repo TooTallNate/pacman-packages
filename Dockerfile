@@ -76,5 +76,11 @@ RUN dkp-makepkg
 USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
+WORKDIR /tmp/quickjs
+RUN curl -sfLS "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.5.0.tar.gz" | tar xzv --strip-components=1 && \
+  make && \
+  cp -v build/qjsc /usr/local/bin && \
+  cd .. && \
+  rm -rf /tmp/quickjs
+
 WORKDIR /
-#RUN rm -rf /dkp-toolchain-vars /packages
