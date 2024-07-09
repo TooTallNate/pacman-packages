@@ -77,7 +77,7 @@ USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 WORKDIR /tmp/quickjs
-RUN curl -sfLS "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.5.0.tar.gz" | tar xzv --strip-components=1 && \
+RUN curl -sfLS "https://github.com/quickjs-ng/quickjs/archive/b071d36ab561a85fad11f487f875aba2d25b5ccd.tar.gz" | tar xzv --strip-components=1 && \
   make && \
   cp -v build/qjsc /usr/local/bin && \
   cd .. && \
