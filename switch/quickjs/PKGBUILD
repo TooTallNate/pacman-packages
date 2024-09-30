@@ -2,7 +2,7 @@
 # Contributor: TooTallNate <n@n8.io>
 
 pkgname=switch-quickjs
-pkgver=0.6.0dev
+pkgver=0.6.1
 pkgrel=1
 pkgdesc='QuickJS is a small and embeddable Javascript engine. It supports the ES2020 specification including modules, asynchronous generators, proxies and BigInt.'
 arch=('any')
@@ -12,9 +12,9 @@ options=(!strip libtool staticlibs)
 depends=()
 groups=('switch-portlibs')
 makedepends=('dkp-toolchain-vars' 'switch-cmake')
-source=("https://github.com/quickjs-ng/quickjs/archive/b071d36ab561a85fad11f487f875aba2d25b5ccd.tar.gz")
+source=("https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.6.1.tar.gz")
 sha256sums=(
-    '8bfadb76e33e780b6809e5f58cdc252207781b3eb2b089883bae9003d5721c87'
+    '276edbb30896cdf2eee12a8bdb5b9c1cc2734eac8c898de6d52268ae201e614d'
 )
 
 build() {
