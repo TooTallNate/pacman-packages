@@ -1,4 +1,4 @@
-FROM devkitpro/devkita64:20241023
+FROM devkitpro/devkita64:20250512
 RUN apt-get update && apt-get install -y \
     binutils \
     fakeroot \
