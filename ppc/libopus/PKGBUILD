@@ -1,0 +1,46 @@
+_pkgname=opus
+pkgname=ppc-lib${_pkgname}
+pkgver=1.6.1
+pkgrel=1
+pkgdesc='Reference implementation of the Opus codec'
+arch=('any')
+url='https://opus-codec.org/'
+license=(BSD)
+options=(!buildflags !strip libtool staticlibs)
+depends=('devkitPPC')
+makedepends=(
+  'dkp-toolchain-vars'
+  'ppc-pkg-config'
+)
+groups=('ppc-portlibs')
+source=("https://downloads.xiph.org/releases/${_pkgname}/${_pkgname}-${pkgver}.tar.gz")
+
+build() {
+  cd "${_pkgname}-${pkgver}"
+
+  source "${DEVKITPRO}/ppcvars.sh"
+
+  ./configure \
+      --host=powerpc-eabi \
+      --prefix="${PORTLIBS_PREFIX}" \
+      --disable-shared \
+      --enable-static \
+      --disable-doc \
+      --disable-extra-programs
+
+  make
+}
+
+package() {
+  cd "${_pkgname}-${pkgver}"
+
+  make install DESTDIR="$pkgdir"
+
+  # install license
+  install -Dm 644 -t "${pkgdir}${PORTLIBS_PREFIX}/licenses/${pkgname}" COPYING
+  
+  # remove autoconf macros
+  rm -rfv "${pkgdir}${PORTLIBS_PREFIX}/share"
+}
+
+sha256sums=('6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1')

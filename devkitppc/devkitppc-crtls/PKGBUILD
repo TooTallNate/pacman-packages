@@ -1,0 +1,24 @@
+
+# Maintainer: Dave Murphy <davem@devkitpro.org>
+
+pkgname=('devkitppc-crtls')
+pkgver=2.0.0
+pkgrel=1
+pkgdesc="devkitPPC crtls."
+arch=('any')
+license=('custom')
+url="http://github.com/devkitpro/devkitppc-crtls"
+source=(${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz)
+
+options=(!strip libtool staticlibs)
+
+groups=('gamecube-dev' 'wii-dev')
+
+package() {
+
+  cd $srcdir/$pkgname-$pkgver
+  make DESTDIR=$pkgdir install
+
+}
+
+sha256sums=('3e3679ac749bbaa13c886aceea03d31121ddf648995507a6d8f2b006f51e3186')

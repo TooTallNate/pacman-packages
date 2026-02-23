@@ -1,0 +1,26 @@
+
+# Maintainer: Dave Murphy <davem@devkitpro.org>
+
+pkgname=('calico')
+pkgver=1.2.0
+pkgrel=1
+pkgdesc="RTOS-like bare metal platform support library for Nintendo DS(i)"
+arch=('any')
+license=('Zope')
+url="http://github.com/devkitpro/${pkgname}"
+options=(!strip libtool staticlibs)
+source=(
+  ${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz
+)
+makedepends=('catnip' 'devkitARM' 'devkitarm-rules' 'devkitarm-crtls')
+
+groups=('nds-dev')
+
+package() {
+
+  cd $srcdir/${pkgname}-${pkgver}
+  DESTDIR=$pkgdir catnip install
+
+}
+
+sha256sums=('9f9988e99ad0ef3017547389f957d722445a9892074836cca3030ef80dcb2635')

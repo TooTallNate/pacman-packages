@@ -1,8 +1,8 @@
 # Maintainer:  Dave Murphy <davem@devkitpro.org>
 
 pkgname=3ds-libarchive
-pkgver=3.1.2
-pkgrel=3
+pkgver=3.7.4
+pkgrel=1
 pkgdesc='library that can create and read several streaming archive format (for Nintendo 3DS homebrew development)'
 arch=('any')
 url="https://www.libarchive.org"
@@ -10,43 +10,43 @@ license=('Simplified BSD')
 options=(!strip libtool staticlibs)
 source=(
  "http://www.libarchive.org/downloads/libarchive-${pkgver}.tar.gz"
- "libarchive-3.1.2.patch"
+ "libarchive-${pkgver}.patch"
 )
-sha256sums=(
- 'eb87eacd8fe49e8d90c8fdc189813023ccc319c5e752b01fb6ad0cc7b2c53d5e'
- '3d397bbd8d374a516cdedcae4b8e7b33cb07f3324a3baca629bc3b6fe097a0f5'
-)
+
 makedepends=('3ds-pkg-config' 'dkp-toolchain-vars')
-depends=('3ds-bzip2' '3ds-zlib' '3ds-liblzma')
+depends=('3ds-bzip2' '3ds-zlib' '3ds-liblzma' '3ds-libzstd')
 groups=('3ds-portlibs')
 
 build() {
   cd libarchive-$pkgver
 
-  source /opt/devkitpro/devkitarm.sh
   source /opt/devkitpro/3dsvars.sh
 
   patch -Np1 -i "$srcdir"/libarchive-${pkgver}.patch
 
-  ./configure --disable-shared --enable-static --prefix=${PORTLIBS_PREFIX} --host=arm-none-eabi \
-    --without-nettle --without-openssl --without-xml2 \
-    --without-expat --without-iconv --disable-bsdtar \
-    --disable-bsdcpio --disable-acl
+  arm-none-eabi-cmake -B _3ds -S . -GNinja \
+    -DENABLE_TAR=OFF \
+    -DENABLE_TEST=OFF \
+    -DENABLE_CAT=OFF \
+    -DENABLE_CPIO=OFF \
+    -DENABLE_UNZIP=OFF
 
-  make
+  cmake --build _3ds
 }
 
 package() {
   cd libarchive-$pkgver
 
-  source /opt/devkitpro/devkitarm.sh
   source /opt/devkitpro/3dsvars.sh
 
-  make DESTDIR="$pkgdir" install
+  DESTDIR="$pkgdir" cmake --install _3ds
+
   # license
   install -Dm644 "$srcdir"/libarchive-${pkgver}/COPYING "$pkgdir"${PORTLIBS_PREFIX}/licenses/$pkgname/COPYING
   # remove useless stuff
-  rm -r "$pkgdir"${PORTLIBS_PREFIX}/share
-  rm -r "$pkgdir"${PORTLIBS_PREFIX}/bin
+  rm -fr "$pkgdir"${PORTLIBS_PREFIX}/share
+
 }
 
+sha256sums=('7875d49596286055b52439ed42f044bd8ad426aa4cc5aabd96bfe7abb971d5e8'
+            'b08920a298b3142e2075379542d85e6471baac634034b25009d6b5c5d30d56e1')

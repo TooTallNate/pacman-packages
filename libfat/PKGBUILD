@@ -2,50 +2,65 @@
 
 pkgbasename=('libfat')
 
+pkgname=${pkgbasename}-${PLATFORM}
+pkgver=2.1.0
+pkgrel=4
+pkgdesc="libdvm"
+arch=('any')
+license=('ZPL')
+
 if [ -z "$PLATFORM" ];then
   PLATFORM=nds
 fi
 
 if [ "$PLATFORM" = "gba" ]; then
   platdesc="Nintendo GBA"
-  makedepends=('devkitARM')
+  depends=('devkitARM' 'libgba')
   groups=('gba-dev')
-elif [ "$PLATFORM" = "ogc" ]; then
-  platdesc="Nintendo Wii & Gamecube"
-  makedepends=('devkitPPC')
-  groups=('wii-dev' 'gamecube-dev')
+  _target=gba
 elif [ "$PLATFORM" = "nds" ]; then
   platdesc="Nintendo NDS"
-  makedepends=('devkitARM')
+  depends=('libnds')
   groups=('nds-dev')
+  _target=ds
+elif [ "$PLATFORM" = "ogc" ]; then
+  platdesc="Nintendo GameCube/Wii"
+  depends=('libogc')
+  groups=('wii-dev' 'gamecube-dev')
+  _target="wii cube"
 else
   echo "$PLATFORM unsupported"
   exit 1
 fi
 
-
-pkgname=("${pkgbasename}-${PLATFORM}")
-pkgver=1.2.0
-pkgrel=1
-pkgdesc="${platdesc} FAT library."
-arch=('any')
-license=('custom')
-url="http://github.com/devkitpro/${pkgbasename}"
+url="http://github.com/devkitpro/"
 options=(!strip libtool staticlibs)
-source=(${pkgbasename}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz)
-sha256sums=(
-  '6bb461dd128b09abbf1a895249dd59c22da98557939930e0483e8b5b36988e10'
+fatfs_mod_ver=0.15.3
+libdvm_ver=2.1.0
+
+source=(
+  libdvm-${libdvm_ver}.tar.gz::${url}/libdvm/archive/v${libdvm_ver}.tar.gz
+  fatfs-mod-${fatfs_mod_ver}.tar.gz::${url}/fatfs-mod/archive/v${fatfs_mod_ver}.tar.gz
 )
 
+makedepends=('catnip')
 
-build() {
+if [ "$PLATFORM" = "nds" ]; then
+  replaces+=('libfilesystem')
+  conflicts+=('libfilesystem')
+  provides=('libfilesystem')
+fi
 
-  make -C $srcdir/${pkgbasename}-${pkgver} $PLATFORM-release
-
+prepare() {
+  mv ${srcdir}/fatfs-mod-${fatfs_mod_ver} ${srcdir}/libdvm-${libdvm_ver}/fatfs
 }
 
 package() {
 
-  make -C $srcdir/${pkgbasename}-${pkgver} DESTDIR=$pkgdir $PLATFORM-install
+  cd $srcdir/libdvm-${libdvm_ver}
+  DESTDIR=$pkgdir catnip install ${_target}
 
 }
+
+sha256sums=('f3fc17671c8234b345a8b742252d4f26bbe481d8f73b6f990b0d820e97a0616f'
+            '26f55e648df6b5cc05204d9288b0c93d30572872c834c2a861b591bad1a3997f')

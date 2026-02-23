@@ -2,45 +2,51 @@
 # Contributor: carstene1ns <arch carsten-teibes de> - http://git.io/ctPKG
 # Contributor: Aaron Lindsay <aaron@aaronlindsay.com>
 
-pkgname=ppc-libpng
-pkgver=1.6.39
-pkgrel=3
+_libname=libpng
+pkgname=ppc-${_libname}
+pkgver=1.6.55
+pkgrel=1
 pkgdesc='PNG format graphic files library (for Nintendo Gamecube/Wii homebrew development)'
 arch=('any')
 url='http://www.libpng.org'
-license=('custom')
+license=('libpng-2.0')
 options=(!strip libtool staticlibs)
 depends=('ppc-zlib')
-makedepends=('ppc-pkg-config' 'dkp-toolchain-vars')
-groups=('ppc-portlibs')
-source=("https://download.sourceforge.net/libpng/libpng-$pkgver.tar.xz")
-sha256sums=(
-  '1f4696ce70b4ee5f85f1e1623dc1229b210029fa4b7aee573df3e2ba7b036937'
+makedepends=(
+  'dkp-toolchain-vars'
+  'ppc-pkg-config'
 )
+groups=('ppc-portlibs')
+source=("https://download.sourceforge.net/libpng/${_libname}-${pkgver}.tar.gz")
 
 build() {
-  cd libpng-$pkgver
+  cd "${_libname}-${pkgver}"
 
-  source /opt/devkitpro/devkitppc.sh
-  source /opt/devkitpro/ppcvars.sh
+  source "${DEVKITPRO}/ppcvars.sh"
 
-  sed -i 's/^bin_PROGRAMS = .*//' Makefile.in
+  ./configure \
+    --prefix="${PORTLIBS_PREFIX}" \
+    --host=powerpc-eabi \
+    --disable-tools \
+    --disable-tests \
+    --disable-shared \
+    --enable-static
 
-  ./configure --prefix="${PORTLIBS_PREFIX}" --host=powerpc-eabi \
-    --disable-shared --enable-static
   make
 }
 
 package() {
-  cd libpng-$pkgver
+  cd "${_libname}-${pkgver}"
 
-  source /opt/devkitpro/devkitppc.sh
-  source /opt/devkitpro/ppcvars.sh
+  source "${DEVKITPRO}/ppcvars.sh"
 
-  make LN_S=cp DESTDIR="$pkgdir" install
+  make install LN_S=cp DESTDIR="$pkgdir"
 
   # license
-  install -Dm644 LICENSE "$pkgdir"${PORTLIBS_PREFIX}/licenses/$pkgname/LICENSE
+  install -Dm644 LICENSE "${pkgdir}${PORTLIBS_PREFIX}/licenses/${pkgname}/LICENSE"
+
   # remove useless stuff
-  rm -r "$pkgdir"${PORTLIBS_PREFIX}/share
+  rm -r "${pkgdir}${PORTLIBS_PREFIX}/share"
 }
+
+sha256sums=('4b0abab6d219e95690ebe4db7fc9aa95f4006c83baaa022373c0c8442271283d')

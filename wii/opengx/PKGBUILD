@@ -1,0 +1,27 @@
+pkgname=wii-opengx
+pkgver=0.17.0
+pkgrel=2
+pkgdesc='wii opengl/gx translation library'
+arch=('any')
+url='https://github.com/devkitPro/opengx'
+license=('BSD')
+options=(!strip libtool staticlibs)
+makedepends=('catnip')
+depends=('libogc')
+groups=('wii-portlibs')
+
+source=(
+  "opengx-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz"
+)
+
+build() {
+  cd opengx-${pkgver}
+  catnip -t wii
+}
+
+package() {
+  cd opengx-${pkgver}
+  DESTDIR=${pkgdir} catnip install
+}
+
+sha256sums=('cbf4cdc4df792e8ac1a0aa95b40008d14892faf23e9de882aad86676c3ea8474')

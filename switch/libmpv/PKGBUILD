@@ -1,9 +1,10 @@
 # Maintainer:  Dave Murphy <davem@devkitpro.org>
 # Contributor: Cpasjuste <cpasjuste@gmail.com>
+# Contributor: averne <averne381@gmail.com>
 pkgbasename=libmpv
 pkgname=switch-${pkgbasename}
-pkgver=0.36.0
-pkgrel=1
+pkgver=0.39.0
+pkgrel=4
 pkgdesc='Command line video player (library only)'
 arch=('any')
 url='https://mpv.io/'
@@ -11,11 +12,11 @@ license=('GPL')
 options=(!strip libtool staticlibs)
 source=("${pkgbasename}-${pkgver}.tar.gz::https://github.com/mpv-player/mpv/archive/v${pkgver}.tar.gz" "mpv.patch")
 sha256sums=(
-  '29abc44f8ebee013bb2f9fe14d80b30db19b534c679056e4851ceadf5a5e8bf6'
-  'afd7a950bf93cc417a7b46a6df40870ed6d0f7854feb2d4d64630d9769141a7a'
+  '2ca92437affb62c2b559b4419ea4785c70d023590500e8a52e95ea3ab4554683'
+  '092795383fee49a97053444c46a527a7ba79df8a5533c25bcdbde93fee2656e1'
 )
-makedepends=('switch-pkg-config' 'dkp-toolchain-vars')
-depends=('switch-sdl2' 'switch-ffmpeg' 'switch-mesa')
+makedepends=("dkp-toolchain-vars" "dkp-meson-scripts")
+depends=('switch-sdl2' 'switch-ffmpeg' 'switch-mesa' 'switch-libarchive' 'switch-libplacebo')
 groups=('switch-portlibs')
 
 prepare() {
@@ -26,20 +27,16 @@ prepare() {
 build() {
   cd mpv-$pkgver
 
-  source /opt/devkitpro/switchvars.sh
+  /opt/devkitpro/meson-cross.sh switch ../crossfile.txt build \
+    -Dlibmpv=true -Dcplayer=false -Dtests=false -Dplain-gl=enabled -Dlua=disabled \
+    -Dsdl2=enabled -Dsdl2-gamepad=enabled -Dsdl2-audio=enabled -Dsdl2-video=enabled \
+    -Diconv=disabled
 
-  ./bootstrap.py
-  export CFLAGS="$CFLAGS -D_POSIX_VERSION=200809L -I$srcdir/mpv-${pkgver}/osdep/switch"
-  TARGET=aarch64-none-elf ./waf configure --prefix="${PORTLIBS_PREFIX}" \
-    --disable-libmpv-shared --enable-libmpv-static --disable-cplayer \
-    --disable-iconv --disable-jpeg --disable-libavdevice \
-    --enable-sdl2 --enable-sdl2-audio --enable-sdl2-gamepad --enable-sdl2-video
-  sed -i 's/#define HAVE_POSIX 1/#define HAVE_POSIX 0/' build/config.h
-  ./waf build
+  meson compile -C build
 }
 
 package() {
   cd mpv-$pkgver
 
-  ./waf install --destdir=$pkgdir
+  DESTDIR="$pkgdir" meson install -C build
 }
