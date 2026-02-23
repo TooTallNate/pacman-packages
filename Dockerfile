@@ -1,15 +1,13 @@
-FROM devkitpro/devkita64:20250512
+FROM devkitpro/devkita64:20260219
 RUN apt-get update && apt-get install -y \
     binutils \
     fakeroot \
     file \
     jq \
+    meson \
     ninja-build \
-    python3-pip \
     vim-nox \
     zstd
-
-RUN pip3 install meson
 
 RUN useradd user
 
@@ -51,11 +49,6 @@ RUN dkp-makepkg
 
 USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
-
-USER user
-WORKDIR /packages/harfbuzz
-COPY switch/harfbuzz/PKGBUILD .
-RUN dkp-makepkg
 
 USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
