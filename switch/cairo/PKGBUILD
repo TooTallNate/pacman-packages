@@ -2,7 +2,7 @@
 # Contributor: Nathan Rajlich <n@n8.io>
 
 pkgname=switch-cairo
-pkgver=1.18.0
+pkgver=1.18.4
 pkgrel=1
 pkgdesc='Cairo is a 2D graphics library with support for multiple output devices.'
 arch=('any')
@@ -14,7 +14,7 @@ groups=('switch-portlibs')
 makedepends=('switch-pkg-config' 'dkp-toolchain-vars' 'dkp-meson-scripts')
 source=("https://www.cairographics.org/releases/cairo-$pkgver.tar.xz")
 sha256sums=(
-    '243a0736b978a33dee29f9cca7521733b78a65b5418206fef7bd1c3d4cf10b64'
+    '445ed8208a6e4823de1226a74ca319d3600e83f6369f99b14265006599c32ccb'
 )
 
 build() {

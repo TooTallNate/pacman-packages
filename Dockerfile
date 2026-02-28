@@ -4,10 +4,11 @@ RUN apt-get update && apt-get install -y \
     fakeroot \
     file \
     jq \
-    meson \
     ninja-build \
+    pip \
     vim-nox \
-    zstd
+    zstd && \
+    pip install --break-system-packages meson
 
 RUN useradd user
 
@@ -70,7 +71,7 @@ USER root
 RUN dkp-pacman -U *.pkg.tar.zst --noconfirm
 
 WORKDIR /tmp/quickjs
-RUN curl -sfLS "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.10.1.tar.gz" | tar xzv --strip-components=1 && \
+RUN curl -sfLS "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.12.1.tar.gz" | tar xzv --strip-components=1 && \
   make && \
   cp -v build/qjsc /usr/local/bin && \
   cd .. && \

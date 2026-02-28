@@ -2,7 +2,7 @@
 # Contributor: TooTallNate <n@n8.io>
 
 pkgname=switch-pixman
-pkgver=0.42.2
+pkgver=0.46.4
 pkgrel=1
 pkgdesc='Pixman is a low-level software library for pixel manipulation, providing features such as image compositing and trapezoid rasterization.'
 arch=('any')
@@ -11,27 +11,19 @@ license=(MIT)
 options=(!strip libtool staticlibs)
 depends=()
 groups=('switch-portlibs')
-makedepends=('switch-pkg-config' 'dkp-toolchain-vars')
+makedepends=('switch-pkg-config' 'dkp-toolchain-vars' 'dkp-meson-scripts')
 source=("https://www.cairographics.org/releases/pixman-$pkgver.tar.gz")
 sha256sums=(
-    'ea1480efada2fd948bc75366f7c349e1c96d3297d09a3fe62626e38e234a625e'
+    'd09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c'
 )
 
 build() {
     cd pixman-$pkgver
-
-    source /opt/devkitpro/switchvars.sh
-
-    ./configure --prefix="${PORTLIBS_PREFIX}" --host=aarch64-none-elf \
-        --disable-shared --enable-static
-
-    make
+    /opt/devkitpro/meson-cross.sh switch ../crossfile.txt build -Dtests=disabled -Ddemos=disabled
+    ninja -C build
 }
 
 package() {
     cd pixman-$pkgver
-
-    source /opt/devkitpro/switchvars.sh
-
-    make DESTDIR="$pkgdir" install
+    DESTDIR="$pkgdir" ninja -C build install
 }
