@@ -14,7 +14,10 @@ jobs:
       packages: write
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
     - name: Log in to the Container registry
       uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
@@ -28,14 +31,21 @@ jobs:
       uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-      
+
     - name: Build and push Docker image
-      uses: docker/build-push-action@3b5e8027fcad23fda98b2e3ac259d8d67585f671
+      uses: docker/build-push-action@v6
       with:
         context: .
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-
-#    - name: Build the Docker image
-#      run: docker build . --file Dockerfile --tag devkita64-nxjs:$(date +%s)
+        # Reuse Docker layers across CI runs. The expensive, rarely-changing
+        # layers (apt deps, the depot_tools + V8 source fetch in the v8-src
+        # stage) are restored from cache so only changed packages rebuild.
+        #
+        # Use a registry-backed cache (a dedicated `buildcache` tag in the same
+        # ghcr repo) rather than type=gha: the V8 source layer is far larger
+        # than the 10 GB GitHub Actions cache cap, which would otherwise thrash.
+        # mode=max caches intermediate multi-stage layers too, not just final.
+        cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+        cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max

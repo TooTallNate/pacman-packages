@@ -401,6 +401,25 @@ and the JIT code-write redirection for full JIT — see PORTING-NOTES.md).
   `$PORTLIBS_PREFIX/share/switch-v8/`; shows the `--start-group` link of
   `-lv8_monolith -labsl -lchrome_zlib -lcompression_utils_portable` + `-lnx`.
 
+### CI / Docker build (Linux host)
+
+The repo's top-level `Dockerfile` builds `switch-v8` in CI on a Linux host
+(`devkitpro/devkita64`, ubuntu-latest runner). Differences from the macOS dev
+build are handled automatically:
+
+- `host_toolchain` is selected by `uname -s` in the PKGBUILD:
+  `//build/toolchain/linux:clang_x64` on Linux, `mac:clang_arm64` on macOS.
+  `mac_sdk_min` and the xcodebuild shims are macOS-only and omitted on Linux.
+- The Dockerfile is multi-stage: a `v8-src` stage runs `fetch v8` +
+  `gclient sync` (pinned to `ARG V8_VER`, which must match `pkgver`), pulling
+  V8's bundled *Linux* Clang for the host tools (torque/mksnapshot). The `v8`
+  stage `COPY --from=v8-src` the tree and runs `dkp-makepkg` with
+  `V8_SRC=/v8/v8`.
+- The expensive source fetch is isolated in its own stage and, together with
+  registry-backed buildx layer caching (`cache-from/cache-to` in
+  `.github/workflows/docker-image.yml`), is reused across CI runs unless
+  `V8_VER` changes.
+
 ## Milestone: full JIT working + benchmarked vs QuickJS (hardware)
 
 Full Sparkplug+TurboFan V8 runs native AArch64 on hardware (FW 18.1.0,

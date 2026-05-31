@@ -50,6 +50,21 @@ sha256sums=()
 # uses to cross-compile for aarch64-none-elf).
 _gn_args_jit() {
     local llvm="$1" res="$2"
+
+    # Host toolchain builds the host tools (torque, mksnapshot). It differs by
+    # build host. On Linux (e.g. CI) use clang_x64; on macOS arm64 use
+    # clang_arm64 (which additionally needs mac_sdk_min + the xcodebuild shims,
+    # see BUILD-LOG.md). Override with $V8_HOST_TOOLCHAIN if needed.
+    local host_tc="$V8_HOST_TOOLCHAIN" host_extra=""
+    if [ -z "$host_tc" ]; then
+        case "$(uname -s)" in
+            Linux)  host_tc="//build/toolchain/linux:clang_x64" ;;
+            Darwin) host_tc="//build/toolchain/mac:clang_arm64"
+                    host_extra='mac_sdk_min = "26.2"' ;;
+            *)      host_tc="//build/toolchain/linux:clang_x64" ;;
+        esac
+    fi
+
     cat <<EOF
 target_os = "horizon"
 target_cpu = "arm64"
@@ -60,11 +75,12 @@ enable_rust = false
 
 # Custom, hardware-validated Horizon toolchain (toolchain/BUILD.gn, dropped into
 # the V8 tree at build/toolchain/horizon/BUILD.gn). Host tools (torque,
-# mksnapshot) build with the macOS arm64 clang toolchain.
+# mksnapshot) build with the build host's clang toolchain.
 custom_toolchain = "//build/toolchain/horizon:aarch64_switch"
-host_toolchain = "//build/toolchain/mac:clang_arm64"
+host_toolchain = "$host_tc"
 horizon_llvm_dir = "$llvm"
 horizon_clang_resource = "$res"
+$host_extra
 
 # Full JIT: interpreter + Sparkplug (baseline) + TurboFan (optimizing).
 v8_enable_sparkplug = true
@@ -82,7 +98,6 @@ cppgc_enable_caged_heap = false
 v8_lower_limits_mode = true
 use_custom_libcxx = false           # use devkitA64 libstdc++, not LLVM libc++
 treat_warnings_as_errors = false
-mac_sdk_min = "26.2"
 
 # TLS: the Horizon toolchain compiles with -femulated-tls (Clang has no
 # -mtp=soft); this is baked into the toolchain cc/cxx commands, not a GN arg.
@@ -98,15 +113,21 @@ prepare() {
     ln -sfn "$V8_SRC" "$srcdir/v8"
 
     local p="$startdir/patches"
+    # Apply a patch in $1 (a git repo dir) only if not already applied, so a
+    # re-used $V8_SRC checkout can be rebuilt idempotently.
+    _apply() {
+        local dir="$1" patch="$2"
+        ( cd "$dir" && git apply --reverse --check "$patch" >/dev/null 2>&1 ) && return 0  # already applied
+        ( cd "$dir" && git apply "$patch" )
+    }
     # Patches apply in their respective sub-repos (build/, third_party/zlib,
     # third_party/abseil-cpp are separate DEPS git repos).
-    ( cd "$srcdir/v8/build"               && git apply "$p/0001-build-config-horizon.patch" )
-    ( cd "$srcdir/v8/third_party/zlib"    && git apply "$p/0002-zlib-disable-arm-neon-horizon.patch" )
-    ( cd "$srcdir/v8" && git apply \
-          "$p/0003-v8-base-newlib-horizon.patch" \
-          "$p/0005-v8-buildgn-horizon-platform.patch" \
-          "$p/0006-v8-buildgn-horizon-target-os.patch" )
-    ( cd "$srcdir/v8/third_party/abseil-cpp" && git apply "$p/0004-abseil-horizon.patch" )
+    _apply "$srcdir/v8/build"               "$p/0001-build-config-horizon.patch"
+    _apply "$srcdir/v8/third_party/zlib"    "$p/0002-zlib-disable-arm-neon-horizon.patch"
+    _apply "$srcdir/v8"                     "$p/0003-v8-base-newlib-horizon.patch"
+    _apply "$srcdir/v8"                     "$p/0005-v8-buildgn-horizon-platform.patch"
+    _apply "$srcdir/v8"                     "$p/0006-v8-buildgn-horizon-target-os.patch"
+    _apply "$srcdir/v8/third_party/abseil-cpp" "$p/0004-abseil-horizon.patch"
 
     # Horizon platform backend sources + custom GN toolchain.
     install -d "$srcdir/v8/src/base/platform/horizon"
@@ -128,7 +149,11 @@ build() {
     command -v ninja >/dev/null || { echo "ERROR: ninja not found (need depot_tools)"; return 1; }
 
     local llvm="$srcdir/v8/third_party/llvm-build/Release+Asserts"
-    local res="$llvm/lib/clang/23/include"
+    # Clang resource include dir; the version (e.g. clang/23) tracks V8's
+    # bundled Clang, so glob for it rather than hardcoding.
+    local res
+    res=$(echo "$llvm"/lib/clang/*/include)
+    [ -d "$res" ] || { echo "ERROR: clang resource dir not found under $llvm/lib/clang/*/include"; return 1; }
     local out="out/switch-jit"
 
     _gn_args_jit "$llvm" "$res" > "$srcdir/v8_gn_args.gn"
