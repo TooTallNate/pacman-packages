@@ -273,13 +273,26 @@ tooling would not need this.)
 From this directory:
 
 ```sh
-( cd "$WORK/v8/build"            && git apply .../patches/0001-build-config-horizon.patch )
-( cd "$WORK/v8/third_party/zlib" && git apply .../patches/0002-zlib-disable-arm-neon-horizon.patch )
+P=.../patches
+( cd "$WORK/v8/build"            && git apply "$P/0001-build-config-horizon.patch" )
+( cd "$WORK/v8/third_party/zlib" && git apply "$P/0002-zlib-disable-arm-neon-horizon.patch" )
+( cd "$WORK/v8" && git apply \
+    "$P/0003-v8-base-newlib-horizon.patch" \
+    "$P/0005-v8-buildgn-horizon-platform.patch" \
+    "$P/0006-v8-buildgn-horizon-target-os.patch" )
+( cd "$WORK/v8/third_party/abseil-cpp" && git apply "$P/0004-abseil-horizon.patch" )
 cp .../toolchain/horizon-BUILD.gn "$WORK/v8/build/toolchain/horizon/BUILD.gn"   # mkdir -p first
 ```
 
-NOTE: `build/` and `third_party/zlib/` are SEPARATE git repos (DEPS), hence two
-patches applied in their respective dirs.
+NOTE: `build/`, `third_party/zlib/`, and `third_party/abseil-cpp/` are SEPARATE
+git repos (DEPS), hence patches applied in their respective dirs. 0003/0005/0006
+apply in the main `v8` repo.
+
+`0006-v8-buildgn-horizon-target-os.patch` is REQUIRED for JIT correctness: it sets
+`V8_HAVE_TARGET_OS` + `V8_TARGET_OS_LINUX` for `target_os=="horizon"`. Without it,
+v8config.h falls back to the *host* OS (macOS), so `mksnapshot` bakes ARMv8.3
+JSCVT/DOTPROD/LSE instructions (e.g. `fjcvtzs`) into the snapshot builtins —
+which fault with "Undefined Instruction" on the Switch's ARMv8.0 Cortex-A57.
 
 ### gn gen (Switch target)
 
@@ -368,3 +381,54 @@ and the JIT code-write redirection for full JIT — see PORTING-NOTES.md).
   `build/toolchain/horizon/BUILD.gn`).
 - `patches/0001-build-config-horizon.patch` — build/ repo config changes.
 - `patches/0002-zlib-disable-arm-neon-horizon.patch` — zlib arch guard.
+- `patches/0003-v8-base-newlib-horizon.patch` — newlib/libnx source ports +
+  JIT write-redirect sites + fatal logging (main `v8` repo).
+- `patches/0004-abseil-horizon.patch` — abseil `tm_gmtoff` fallback + newlib glue.
+- `patches/0005-v8-buildgn-horizon-platform.patch` — `v8_libbase` Horizon
+  platform sources (mman/atomic/libc/stack-trace).
+- `patches/0006-v8-buildgn-horizon-target-os.patch` — set `V8_HAVE_TARGET_OS` +
+  `V8_TARGET_OS_LINUX` so mksnapshot does not emit ARMv8.3 instructions (the
+  `fjcvtzs` fix). REQUIRED for JIT correctness on the A57.
+- `hello-v8/source/main-bench.cc` + `hello-v8/build-bench.sh` — V8(JIT) vs
+  QuickJS benchmark embedder and its link recipe.
+
+## Milestone: full JIT working + benchmarked vs QuickJS (hardware)
+
+Full Sparkplug+TurboFan V8 runs native AArch64 on hardware (FW 18.1.0,
+Atmosphère), passes the 7/7 correctness battery, and beats QuickJS
+(quickjs-ng 0.12.1, devkitPro portlib) on every workload:
+
+| benchmark      | V8-JIT  | QuickJS  | speedup | result (both) |
+|----------------|--------:|---------:|--------:|---------------|
+| fib(32)        |  161 ms |  1613 ms |  10.0x  | 2178309       |
+| loop-sum-5M    |   19 ms |   899 ms |  46.2x  | 633038624     |
+| string-build   |  4.5 ms |    40 ms |   8.9x  | 20000         |
+| array-sort-50k |  142 ms |   183 ms |   1.3x  | 4294873283    |
+| mandel-ish     |  193 ms |  7028 ms |  36.3x  | 10000000      |
+
+Tight numeric loops (46x) and FP-heavy code (36x) show the JIT payoff; sort
+(1.3x) is the floor since both engines drop into native C for the sort core.
+All numeric results match between engines, confirming correctness.
+
+### Two bugs fixed to get the benchmark running
+
+1. **`fjcvtzs` / ARMv8.3 in builtins** — patch 0006 (see above). Verified the
+   rebuilt embedded snapshot blob contains **0** `fjcvtzs` (mask `0x1e7e0000`),
+   down from 202. `mksnapshot` now reports `JSCVT=0 DOTPROD=0 LSE=0`.
+2. **Embedder/V8 build-config mismatch** — the embedder must NOT define
+   `V8_COMPRESS_POINTERS` (V8 checks the macro by *presence*, so `=0` still reads
+   as ENABLED). Since this V8 is built `v8_enable_pointer_compression=false`,
+   `build-bench.sh` defines neither `V8_COMPRESS_POINTERS` nor
+   `V8_31BIT_SMIS_ON_64BIT_ARCH`. The same applies to any embedder.
+
+### Building the benchmark
+
+```sh
+# 1. Build the JIT monolith into out/switch-jit (gn args = gn-args-jit.txt).
+# 2. Rebuild the abseil archive (not bundled in the monolith) to /tmp/libabsl_jit.a:
+A64=/opt/devkitpro/devkitA64/bin
+find out/switch-jit/obj/third_party/abseil-cpp -name '*.o' \
+  | xargs $A64/aarch64-none-elf-ar qc /tmp/libabsl_jit.a
+$A64/aarch64-none-elf-ranlib /tmp/libabsl_jit.a
+# 3. ./hello-v8/build-bench.sh   (links monolith + libabsl_jit.a + -lqjs + -lnx)
+```

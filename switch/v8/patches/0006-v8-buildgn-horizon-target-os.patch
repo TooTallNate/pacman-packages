@@ -1,0 +1,19 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index a19ec521..cd784bc3 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -1131,6 +1131,14 @@ if (target_os == "android") {
+ } else if (target_os == "chromeos") {
+   enabled_external_v8_defines += [ "V8_HAVE_TARGET_OS" ]
+   enabled_external_v8_defines += [ "V8_TARGET_OS_CHROMEOS" ]
++} else if (target_os == "horizon") {
++  # Nintendo Switch (Horizon/libnx). No dedicated V8_TARGET_OS_HORIZON exists;
++  # mark the target OS as set (V8_HAVE_TARGET_OS) and pick a benign known OS so
++  # that v8config.h does NOT fall back to the host OS (macOS), which would make
++  # CpuFeaturesFromTargetOS() bake JSCVT/DOTPROD/LSE (ARMv8.3) into the snapshot
++  # builtins. The Tegra X1 Cortex-A57 is ARMv8.0 and lacks fjcvtzs.
++  enabled_external_v8_defines += [ "V8_HAVE_TARGET_OS" ]
++  enabled_external_v8_defines += [ "V8_TARGET_OS_LINUX" ]
+ }
+ 
+ # Some V8_TARGET_ARCH_ defines that affect Api constants (see usages of
