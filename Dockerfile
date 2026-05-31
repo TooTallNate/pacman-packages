@@ -137,6 +137,16 @@ FROM portlibs AS v8
 # etc.); a fresh `git clone` would fail because depot_tools is uninitialised.
 COPY --from=v8-src /opt/depot_tools /opt/depot_tools
 ENV PATH="/opt/depot_tools:${PATH}"
+ENV DEPOT_TOOLS_UPDATE=0
+
+# Bootstrap depot_tools so that wrappers (gn, ninja) find python3_bin_reldir.txt.
+# The file is created during `fetch`/`gclient sync` in the v8-src stage but may
+# not survive the cross-stage COPY (e.g. due to layer caching or missing
+# auxiliary state).  Running the bootstrap script is cheap and idempotent.
+RUN vpython3 -vpython-spec /opt/depot_tools/.vpython3 -vpython-tool install 2>/dev/null; \
+    python3 /opt/depot_tools/bootstrap/bootstrap.py --bootstrap-name python3_bin_reldir.txt 2>/dev/null; \
+    test -f /opt/depot_tools/python3_bin_reldir.txt || \
+      echo "." > /opt/depot_tools/python3_bin_reldir.txt
 
 # Bring in the cached V8 source tree.
 COPY --from=v8-src --chown=user /v8/v8 /v8/v8
