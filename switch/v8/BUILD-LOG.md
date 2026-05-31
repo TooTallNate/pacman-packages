@@ -391,6 +391,15 @@ and the JIT code-write redirection for full JIT — see PORTING-NOTES.md).
   `fjcvtzs` fix). REQUIRED for JIT correctness on the A57.
 - `hello-v8/source/main-bench.cc` + `hello-v8/build-bench.sh` — V8(JIT) vs
   QuickJS benchmark embedder and its link recipe.
+- `PKGBUILD` — packages the full-JIT build as `switch-v8`. Because V8 cannot be
+  a single tarball (depot_tools/gclient + bundled Clang + host tools), it
+  expects a pre-fetched checkout via `$V8_SRC` (see the PKGBUILD header). It
+  applies patches 0001-0006, drops in `horizon-src/` + the Horizon GN
+  toolchain, builds `out/switch-jit`, rebuilds the abseil archive, and installs
+  4 static libs + headers + an example link recipe into `$PORTLIBS_PREFIX`.
+- `example-link-recipe.sh` — installed to
+  `$PORTLIBS_PREFIX/share/switch-v8/`; shows the `--start-group` link of
+  `-lv8_monolith -labsl -lchrome_zlib -lcompression_utils_portable` + `-lnx`.
 
 ## Milestone: full JIT working + benchmarked vs QuickJS (hardware)
 

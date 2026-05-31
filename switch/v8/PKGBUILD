@@ -1,99 +1,176 @@
 # Maintainer:  Dave Murphy <davem@devkitpro.org>
 # Contributor: Nathan Rajlich <n@n8.io>
 #
-# !!! WORK IN PROGRESS / NOT YET FUNCTIONAL !!!
-# See PORTING-NOTES.md in this directory. This PKGBUILD is a scaffold that
-# documents the intended build. It will NOT produce a working package until the
-# blockers in PORTING-NOTES.md (Clang toolchain for aarch64-none-elf, source
-# assembly, Horizon platform/memory backend) are solved.
+# Full-JIT (Sparkplug + TurboFan) V8 for Nintendo Switch / devkitA64.
+# Runs native AArch64 code on hardware and beats QuickJS 1.3x-46x (see
+# BUILD-LOG.md). The interpreter (Ignition) plus baseline (Sparkplug) and
+# optimizing (TurboFan) tiers are enabled; Maglev is off.
 #
-# Milestone M1 target: jitless (v8_enable_lite_mode) static libv8_monolith.a.
+# !!! NON-STANDARD SOURCE FETCH !!!
+# V8 cannot be expressed as a single tarball + sha256: it is assembled by
+# depot_tools (`fetch v8 && gclient sync`) from many pinned DEPS repos, and the
+# build additionally needs V8's bundled Clang and host tools (torque,
+# mksnapshot). pacman cannot model that. So this PKGBUILD expects a
+# PRE-FETCHED, pinned V8 checkout and a few host prerequisites on PATH:
+#
+#   export V8_SRC=/path/to/v8        # a `fetch v8 && gclient sync` checkout
+#                                    # pinned to tag $pkgver (15.0.243)
+#   PATH must contain: gn, ninja (depot_tools), python3, and the devkitA64
+#   GNU binutils (aarch64-none-elf-ar/ranlib).
+#
+# The build is driven on a macOS arm64 host (the validated host toolchain that
+# builds torque/mksnapshot). A Linux host with an equivalent Clang/host setup
+# would need host_toolchain adjusted below.
 
 pkgname=switch-v8
 # Pinned to the newest upstream V8 release tag (verified via
 # `git ls-remote --tags https://chromium.googlesource.com/v8/v8.git`).
-# Newer is better for this port: the consolidated WritableJitAllocation code
-# write path (our rw/rx redirection chokepoint) is most mature on recent trunk.
+# Newer is better: the consolidated WritableJitAllocation code-write path (our
+# rw/rx redirection chokepoint for Horizon W^X) is most mature on recent trunk.
 pkgver=15.0.243
 pkgrel=1
-pkgdesc="V8 JavaScript engine (jitless PoC) for Nintendo Switch / devkitA64"
+pkgdesc="V8 JavaScript engine (full JIT: Sparkplug+TurboFan) for Nintendo Switch / devkitA64"
 arch=('any')
 url='https://v8.dev/'
 license=('BSD')
 options=(!strip libtool staticlibs)
 depends=()
 groups=('switch-portlibs')
+# dkp-toolchain-vars provides switchvars.sh (PORTLIBS_PREFIX etc.).
+# Build prerequisites NOT expressible as pacman deps (must be on host PATH):
+#   depot_tools (gn, ninja), python3, devkitA64 binutils, and a pre-fetched
+#   V8 source tree pointed to by $V8_SRC (see header).
 makedepends=('dkp-toolchain-vars')
-# Build prerequisites NOT expressible as pacman deps (must exist on host PATH):
-#   - depot_tools (gn, ninja, fetch, gclient)
-#   - a Clang toolchain targeting aarch64-none-elf with the devkitA64 newlib sysroot
-#   - python3
-#
-# V8 cannot be fetched as a single tarball+sha256. Provide a pre-assembled,
-# pinned source tree (V8 + required DEPS) as a hosted tarball, OR run
-# `fetch v8 && gclient sync` out of band and point srcdir at it.
 source=()
 sha256sums=()
 
-# GN args for the jitless proof-of-concept (M1). These are a starting point and
-# WILL need iteration as the Horizon platform backend lands.
-_gn_args_jitless() {
-    cat <<'EOF'
+# GN args for the full-JIT build. $horizon_llvm_dir / $horizon_clang_resource
+# are filled in at build() time from the actual V8 checkout (they point at
+# V8's bundled Clang, which the custom Horizon toolchain in toolchain/BUILD.gn
+# uses to cross-compile for aarch64-none-elf).
+_gn_args_jit() {
+    local llvm="$1" res="$2"
+    cat <<EOF
 target_os = "horizon"
 target_cpu = "arm64"
 is_clang = true
 is_debug = false
+symbol_level = 0
+enable_rust = false
 
-# Use our custom, hardware-validated toolchain (see toolchain/BUILD.gn +
-# toolchain/clang-flags.sh). Drop toolchain/BUILD.gn into the V8 tree at
-# build/toolchain/horizon/BUILD.gn before running gn gen.
+# Custom, hardware-validated Horizon toolchain (toolchain/BUILD.gn, dropped into
+# the V8 tree at build/toolchain/horizon/BUILD.gn). Host tools (torque,
+# mksnapshot) build with the macOS arm64 clang toolchain.
 custom_toolchain = "//build/toolchain/horizon:aarch64_switch"
-host_toolchain = "//build/toolchain/horizon:aarch64_switch"  # placeholder; see notes
+host_toolchain = "//build/toolchain/mac:clang_arm64"
+horizon_llvm_dir = "$llvm"
+horizon_clang_resource = "$res"
 
-v8_enable_lite_mode = true          # implies jitless (interpreter-only)
-v8_jitless = true
-v8_use_snapshot = false             # avoid host mksnapshot cross-compile for now
-v8_enable_i18n_support = false
-v8_enable_pointer_compression = false
-v8_static_library = true
+# Full JIT: interpreter + Sparkplug (baseline) + TurboFan (optimizing).
+v8_enable_sparkplug = true
+v8_enable_turbofan = true
+v8_enable_maglev = false
+
 v8_monolithic = true
+v8_static_library = true
+v8_use_external_startup_data = false
+v8_enable_i18n_support = false
+v8_enable_temporal_support = false
+v8_enable_sandbox = false
+v8_enable_pointer_compression = false
+cppgc_enable_caged_heap = false
+v8_lower_limits_mode = true
 use_custom_libcxx = false           # use devkitA64 libstdc++, not LLVM libc++
 treat_warnings_as_errors = false
-symbol_level = 1
+mac_sdk_min = "26.2"
 
-# TLS: our toolchain compiles with -femulated-tls (Clang has no -mtp=soft).
-# This is baked into the toolchain cc/cxx commands, not a GN arg.
+# TLS: the Horizon toolchain compiles with -femulated-tls (Clang has no
+# -mtp=soft); this is baked into the toolchain cc/cxx commands, not a GN arg.
 EOF
+}
+
+prepare() {
+    [ -n "$V8_SRC" ] || { echo "ERROR: set V8_SRC to a pinned 'fetch v8' checkout (tag $pkgver)"; return 1; }
+    [ -d "$V8_SRC/v8" ] && V8_SRC="$V8_SRC/v8"   # accept either gclient root or the v8 dir
+    [ -f "$V8_SRC/BUILD.gn" ] || { echo "ERROR: \$V8_SRC ($V8_SRC) is not a V8 checkout"; return 1; }
+
+    # Stage the checkout under srcdir (symlink to avoid copying ~30 GB).
+    ln -sfn "$V8_SRC" "$srcdir/v8"
+
+    local p="$startdir/patches"
+    # Patches apply in their respective sub-repos (build/, third_party/zlib,
+    # third_party/abseil-cpp are separate DEPS git repos).
+    ( cd "$srcdir/v8/build"               && git apply "$p/0001-build-config-horizon.patch" )
+    ( cd "$srcdir/v8/third_party/zlib"    && git apply "$p/0002-zlib-disable-arm-neon-horizon.patch" )
+    ( cd "$srcdir/v8" && git apply \
+          "$p/0003-v8-base-newlib-horizon.patch" \
+          "$p/0005-v8-buildgn-horizon-platform.patch" \
+          "$p/0006-v8-buildgn-horizon-target-os.patch" )
+    ( cd "$srcdir/v8/third_party/abseil-cpp" && git apply "$p/0004-abseil-horizon.patch" )
+
+    # Horizon platform backend sources + custom GN toolchain.
+    install -d "$srcdir/v8/src/base/platform/horizon"
+    install -m644 "$startdir/horizon-src/atomic-horizon.cc"     "$srcdir/v8/src/base/platform/horizon/"
+    install -m644 "$startdir/horizon-src/libc-horizon.cc"       "$srcdir/v8/src/base/platform/horizon/"
+    install -m644 "$startdir/horizon-src/mman-horizon.cc"       "$srcdir/v8/src/base/platform/horizon/"
+    install -m644 "$startdir/horizon-src/mman.h"                "$srcdir/v8/src/base/platform/horizon/"
+    install -m644 "$startdir/horizon-src/platform-horizon.cc"   "$srcdir/v8/src/base/platform/"
+    install -m644 "$startdir/horizon-src/stack_trace_horizon.cc" "$srcdir/v8/src/base/debug/"
+    install -d "$srcdir/v8/build/toolchain/horizon"
+    install -m644 "$startdir/toolchain/horizon-BUILD.gn" "$srcdir/v8/build/toolchain/horizon/BUILD.gn"
 }
 
 build() {
     source /opt/devkitpro/switchvars.sh
-
     cd "$srcdir/v8"
 
-    # depot_tools must be on PATH (provides gn + ninja).
-    command -v gn   >/dev/null || { echo "ERROR: gn not found (need depot_tools)"; return 1; }
+    command -v gn    >/dev/null || { echo "ERROR: gn not found (need depot_tools)"; return 1; }
     command -v ninja >/dev/null || { echo "ERROR: ninja not found (need depot_tools)"; return 1; }
 
-    local out="out/switch-jitless"
-    _gn_args_jitless > /tmp/v8_gn_args.gn
-    # NOTE: a custom GN toolchain definition pointing at the aarch64-none-elf
-    # Clang + devkitA64 sysroot is REQUIRED here; upstream has no "horizon"
-    # toolchain. This is tracked in PORTING-NOTES.md (blocker #1/#6).
-    gn gen "$out" --args="$(cat /tmp/v8_gn_args.gn)"
+    local llvm="$srcdir/v8/third_party/llvm-build/Release+Asserts"
+    local res="$llvm/lib/clang/23/include"
+    local out="out/switch-jit"
 
+    _gn_args_jit "$llvm" "$res" > "$srcdir/v8_gn_args.gn"
+    gn gen "$out" --args="$(cat "$srcdir/v8_gn_args.gn")"
     ninja -C "$out" v8_monolith
+
+    # abseil is NOT bundled into libv8_monolith.a; assemble its object files
+    # into a separate archive consumers must also link.
+    local ar=aarch64-none-elf-ar ranlib=aarch64-none-elf-ranlib
+    rm -f "$srcdir/libabsl.a"
+    find "$out/obj/third_party/abseil-cpp" -name '*.o' -print0 \
+        | xargs -0 "$ar" qc "$srcdir/libabsl.a"
+    "$ranlib" "$srcdir/libabsl.a"
 }
 
 package() {
     source /opt/devkitpro/switchvars.sh
-
     cd "$srcdir/v8"
-    local out="out/switch-jitless"
+    local out="out/switch-jit"
 
     install -d "$pkgdir/$PORTLIBS_PREFIX/lib"
     install -d "$pkgdir/$PORTLIBS_PREFIX/include"
 
-    install -m644 "$out/obj/libv8_monolith.a" "$pkgdir/$PORTLIBS_PREFIX/lib/"
+    # Static libraries. A V8 embedder links all four (plus -lnx, -lm):
+    #   -lv8_monolith -labsl -lchrome_zlib -lcompression_utils_portable
+    install -m644 "$out/obj/:v8_monolith/libv8_monolith.a" \
+        "$pkgdir/$PORTLIBS_PREFIX/lib/libv8_monolith.a"
+    install -m644 "$srcdir/libabsl.a" \
+        "$pkgdir/$PORTLIBS_PREFIX/lib/libabsl.a"
+    install -m644 "$out/obj/third_party/zlib:zlib/libchrome_zlib.a" \
+        "$pkgdir/$PORTLIBS_PREFIX/lib/libchrome_zlib.a"
+    install -m644 "$out/obj/third_party/zlib/google:compression_utils_portable/libcompression_utils_portable.a" \
+        "$pkgdir/$PORTLIBS_PREFIX/lib/libcompression_utils_portable.a"
+
+    # Public headers (the include/ tree provides "include/v8-*.h" etc.).
     cp -r include/* "$pkgdir/$PORTLIBS_PREFIX/include/"
+
+    # Embedder notes: V8 was built with pointer compression DISABLED, so embedder
+    # code must NOT define V8_COMPRESS_POINTERS (V8 checks the macro by presence,
+    # so any value reads as ENABLED and trips the build-config mismatch fatal).
+    # Link inside --start-group/--end-group; see hello-v8/build-bench.sh.
+    install -d "$pkgdir/$PORTLIBS_PREFIX/share/switch-v8"
+    install -m644 "$startdir/example-link-recipe.sh" \
+        "$pkgdir/$PORTLIBS_PREFIX/share/switch-v8/example-link-recipe.sh"
 }
