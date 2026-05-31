@@ -146,8 +146,7 @@ ENV DEPOT_TOOLS_UPDATE=0
 # structure with a symlink to the system python3 — this is cheaper and more
 # reliable than re-running the full cipd bootstrap.
 RUN echo "." > /opt/depot_tools/python3_bin_reldir.txt && \
-    mkdir -p /opt/depot_tools/python3/bin && \
-    ln -sf /usr/bin/python3 /opt/depot_tools/python3/bin/python3
+    ln -sf /usr/bin/python3 /opt/depot_tools/python3
 
 # Bring in the cached V8 source tree.
 COPY --from=v8-src --chown=user /v8/v8 /v8/v8
