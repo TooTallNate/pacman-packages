@@ -1,0 +1,99 @@
+# Maintainer:  Dave Murphy <davem@devkitpro.org>
+# Contributor: Nathan Rajlich <n@n8.io>
+#
+# !!! WORK IN PROGRESS / NOT YET FUNCTIONAL !!!
+# See PORTING-NOTES.md in this directory. This PKGBUILD is a scaffold that
+# documents the intended build. It will NOT produce a working package until the
+# blockers in PORTING-NOTES.md (Clang toolchain for aarch64-none-elf, source
+# assembly, Horizon platform/memory backend) are solved.
+#
+# Milestone M1 target: jitless (v8_enable_lite_mode) static libv8_monolith.a.
+
+pkgname=switch-v8
+# Pinned to the newest upstream V8 release tag (verified via
+# `git ls-remote --tags https://chromium.googlesource.com/v8/v8.git`).
+# Newer is better for this port: the consolidated WritableJitAllocation code
+# write path (our rw/rx redirection chokepoint) is most mature on recent trunk.
+pkgver=15.0.243
+pkgrel=1
+pkgdesc="V8 JavaScript engine (jitless PoC) for Nintendo Switch / devkitA64"
+arch=('any')
+url='https://v8.dev/'
+license=('BSD')
+options=(!strip libtool staticlibs)
+depends=()
+groups=('switch-portlibs')
+makedepends=('dkp-toolchain-vars')
+# Build prerequisites NOT expressible as pacman deps (must exist on host PATH):
+#   - depot_tools (gn, ninja, fetch, gclient)
+#   - a Clang toolchain targeting aarch64-none-elf with the devkitA64 newlib sysroot
+#   - python3
+#
+# V8 cannot be fetched as a single tarball+sha256. Provide a pre-assembled,
+# pinned source tree (V8 + required DEPS) as a hosted tarball, OR run
+# `fetch v8 && gclient sync` out of band and point srcdir at it.
+source=()
+sha256sums=()
+
+# GN args for the jitless proof-of-concept (M1). These are a starting point and
+# WILL need iteration as the Horizon platform backend lands.
+_gn_args_jitless() {
+    cat <<'EOF'
+target_os = "horizon"
+target_cpu = "arm64"
+is_clang = true
+is_debug = false
+
+# Use our custom, hardware-validated toolchain (see toolchain/BUILD.gn +
+# toolchain/clang-flags.sh). Drop toolchain/BUILD.gn into the V8 tree at
+# build/toolchain/horizon/BUILD.gn before running gn gen.
+custom_toolchain = "//build/toolchain/horizon:aarch64_switch"
+host_toolchain = "//build/toolchain/horizon:aarch64_switch"  # placeholder; see notes
+
+v8_enable_lite_mode = true          # implies jitless (interpreter-only)
+v8_jitless = true
+v8_use_snapshot = false             # avoid host mksnapshot cross-compile for now
+v8_enable_i18n_support = false
+v8_enable_pointer_compression = false
+v8_static_library = true
+v8_monolithic = true
+use_custom_libcxx = false           # use devkitA64 libstdc++, not LLVM libc++
+treat_warnings_as_errors = false
+symbol_level = 1
+
+# TLS: our toolchain compiles with -femulated-tls (Clang has no -mtp=soft).
+# This is baked into the toolchain cc/cxx commands, not a GN arg.
+EOF
+}
+
+build() {
+    source /opt/devkitpro/switchvars.sh
+
+    cd "$srcdir/v8"
+
+    # depot_tools must be on PATH (provides gn + ninja).
+    command -v gn   >/dev/null || { echo "ERROR: gn not found (need depot_tools)"; return 1; }
+    command -v ninja >/dev/null || { echo "ERROR: ninja not found (need depot_tools)"; return 1; }
+
+    local out="out/switch-jitless"
+    _gn_args_jitless > /tmp/v8_gn_args.gn
+    # NOTE: a custom GN toolchain definition pointing at the aarch64-none-elf
+    # Clang + devkitA64 sysroot is REQUIRED here; upstream has no "horizon"
+    # toolchain. This is tracked in PORTING-NOTES.md (blocker #1/#6).
+    gn gen "$out" --args="$(cat /tmp/v8_gn_args.gn)"
+
+    ninja -C "$out" v8_monolith
+}
+
+package() {
+    source /opt/devkitpro/switchvars.sh
+
+    cd "$srcdir/v8"
+    local out="out/switch-jitless"
+
+    install -d "$pkgdir/$PORTLIBS_PREFIX/lib"
+    install -d "$pkgdir/$PORTLIBS_PREFIX/include"
+
+    install -m644 "$out/obj/libv8_monolith.a" "$pkgdir/$PORTLIBS_PREFIX/lib/"
+    cp -r include/* "$pkgdir/$PORTLIBS_PREFIX/include/"
+}

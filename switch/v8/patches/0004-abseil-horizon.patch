@@ -1,0 +1,78 @@
+diff --git a/absl/base/config.h b/absl/base/config.h
+index d4a7bfb..8e066d3 100644
+--- a/absl/base/config.h
++++ b/absl/base/config.h
+@@ -380,7 +380,9 @@ static_assert(ABSL_INTERNAL_INLINE_NAMESPACE_STR[0] != 'h' ||
+     defined(__myriad2__) || defined(__HAIKU__) || defined(__OpenBSD__) || \
+     defined(__NetBSD__) || defined(__QNX__) || defined(__VXWORKS__) ||    \
+     defined(__hexagon__) || defined(__XTENSA__) ||                        \
+-    defined(_WASI_EMULATED_MMAN)
++    defined(_WASI_EMULATED_MMAN) || defined(__SWITCH__)
++// __SWITCH__: V8 provides a libnx-backed <sys/mman.h> shim with anonymous
++// mmap/munmap, sufficient for abseil's LowLevelAlloc.
+ #define ABSL_HAVE_MMAP 1
+ #endif
+ 
+diff --git a/absl/base/internal/sysinfo.cc b/absl/base/internal/sysinfo.cc
+index cd08e51..ad44e3f 100644
+--- a/absl/base/internal/sysinfo.cc
++++ b/absl/base/internal/sysinfo.cc
+@@ -465,6 +465,13 @@ pid_t GetTID() {
+   return static_cast<pid_t>(zx_thread_self());
+ }
+ 
++#elif defined(__SWITCH__)
++
++// newlib's pthread_t is a pointer (struct __pthread_t*); cast via uintptr_t.
++pid_t GetTID() {
++  return static_cast<pid_t>(reinterpret_cast<uintptr_t>(pthread_self()));
++}
++
+ #else
+ 
+ // Fallback implementation of `GetTID` using `pthread_self`.
+diff --git a/absl/debugging/failure_signal_handler.cc b/absl/debugging/failure_signal_handler.cc
+index 16609f1..e6cfb1c 100644
+--- a/absl/debugging/failure_signal_handler.cc
++++ b/absl/debugging/failure_signal_handler.cc
+@@ -55,7 +55,9 @@
+ #include "absl/debugging/internal/examine_stack.h"
+ #include "absl/debugging/stacktrace.h"
+ 
+-#if !defined(_WIN32) && !defined(__wasi__)
++// Switch (Horizon/newlib) has only a minimal sigaction without SA_SIGINFO /
++// sa_sigaction; fall back to the signal()-based handler path.
++#if !defined(_WIN32) && !defined(__wasi__) && !defined(__SWITCH__)
+ #define ABSL_HAVE_SIGACTION
+ // Apple WatchOS and TVOS don't allow sigaltstack
+ // Apple macOS has sigaltstack, but using it makes backtrace() unusable.
+diff --git a/absl/debugging/internal/elf_mem_image.h b/absl/debugging/internal/elf_mem_image.h
+index c8a1036..444cf48 100644
+--- a/absl/debugging/internal/elf_mem_image.h
++++ b/absl/debugging/internal/elf_mem_image.h
+@@ -35,7 +35,8 @@
+ #if defined(__ELF__) && !defined(__OpenBSD__) && !defined(__QNX__) &&    \
+     !defined(__asmjs__) && !defined(__wasm__) && !defined(__HAIKU__) &&  \
+     !defined(__sun) && !defined(__VXWORKS__) && !defined(__hexagon__) && \
+-    !defined(__XTENSA__)
++    !defined(__XTENSA__) && !defined(__SWITCH__)
++// Switch (Horizon/newlib) has no <link.h>/ElfW dynamic-linking introspection.
+ #define ABSL_HAVE_ELF_MEM_IMAGE 1
+ #endif
+ 
+diff --git a/absl/time/internal/cctz/src/time_zone_libc.cc b/absl/time/internal/cctz/src/time_zone_libc.cc
+index 362da1a..319f4c3 100644
+--- a/absl/time/internal/cctz/src/time_zone_libc.cc
++++ b/absl/time/internal/cctz/src/time_zone_libc.cc
+@@ -61,8 +61,10 @@ auto tm_zone(const std::tm& tm) -> decltype(tzname[0]) {
+   return tzname[is_dst];
+ }
+ #elif defined(__native_client__) || defined(__myriad2__) || \
+-    defined(__EMSCRIPTEN__)
++    defined(__EMSCRIPTEN__) || defined(__SWITCH__)
+ // Uses the globals: '_timezone' and 'tzname'.
++// __SWITCH__ (devkitA64/newlib): struct tm has no tm_gmtoff/tm_zone fields, but
++// newlib provides the '_timezone' (long) and 'tzname' (via _tzname) globals.
+ auto tm_gmtoff(const std::tm& tm) -> decltype(_timezone + 0) {
+   const bool is_dst = tm.tm_isdst > 0;
+   return _timezone + (is_dst ? 60 * 60 : 0);

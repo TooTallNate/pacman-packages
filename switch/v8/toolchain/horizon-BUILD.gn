@@ -1,0 +1,104 @@
+# Cross toolchain for V8 -> Nintendo Switch (Horizon).
+# Uses V8's bundled Clang as the compiler and devkitA64 g++ as the linker.
+# Mirrors the validated recipe in pacman-packages/switch/v8/toolchain/.
+#
+# All locals live INSIDE toolchain() so GN does not flag them unused (tool()
+# command strings are evaluated lazily).
+
+declare_args() {
+  dkp_root = "/opt/devkitpro"
+
+  # Absolute path to V8's bundled llvm-build dir.
+  horizon_llvm_dir = ""
+
+  # Clang resource include dir (clang -print-resource-dir + /include).
+  horizon_clang_resource = ""
+}
+
+toolchain("aarch64_switch") {
+  triple = "aarch64-none-elf"
+  a64 = "$dkp_root/devkitA64"
+  newlib = "$a64/$triple/include"
+  cxxinc = "$a64/$triple/include/c++/15.2.0"
+
+  cc = "$horizon_llvm_dir/bin/clang"
+  cxx = "$horizon_llvm_dir/bin/clang++"
+  ar = "$horizon_llvm_dir/bin/llvm-ar"
+  link_driver = "$a64/bin/$triple-g++"
+
+  arch = "--target=$triple -march=armv8-a+crc+crypto -mtune=cortex-a57 -femulated-tls -fPIE"
+  sysinc = "-nostdinc -nostdinc++ -isystem $horizon_clang_resource -isystem $cxxinc -isystem $cxxinc/$triple -isystem $newlib -isystem $dkp_root/libnx/include"
+  common = "$arch -D__SWITCH__ -D_DEFAULT_SOURCE $sysinc"
+  ldflags = "-specs=$dkp_root/libnx/switch.specs -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
+  ldlibs = "-L$dkp_root/libnx/lib -lnx"
+
+  tool("cc") {
+    depfile = "{{output}}.d"
+    command = "$cc -MMD -MF $depfile $common {{defines}} {{include_dirs}} {{cflags}} {{cflags_c}} -c {{source}} -o {{output}}"
+    depsformat = "gcc"
+    outputs = [ "{{source_out_dir}}/{{label_name}}.{{source_name_part}}.o" ]
+    description = "CC {{output}}"
+  }
+
+  tool("cxx") {
+    depfile = "{{output}}.d"
+    command = "$cxx -MMD -MF $depfile $common -fno-rtti -fno-exceptions {{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} -c {{source}} -o {{output}}"
+    depsformat = "gcc"
+    outputs = [ "{{source_out_dir}}/{{label_name}}.{{source_name_part}}.o" ]
+    description = "CXX {{output}}"
+  }
+
+  tool("asm") {
+    depfile = "{{output}}.d"
+    command = "$cc -MMD -MF $depfile $arch {{defines}} {{include_dirs}} {{asmflags}} -c {{source}} -o {{output}}"
+    depsformat = "gcc"
+    outputs = [ "{{source_out_dir}}/{{label_name}}.{{source_name_part}}.o" ]
+    description = "ASM {{output}}"
+  }
+
+  tool("alink") {
+    rspfile = "{{output}}.rsp"
+    rspfile_content = "{{inputs}}"
+    command = "rm -f {{output}} && $ar rcsD {{output}} @$rspfile"
+    outputs = [ "{{output_dir}}/{{target_output_name}}{{output_extension}}" ]
+    default_output_dir = "{{root_out_dir}}/obj/{{label_no_toolchain}}"
+    default_output_extension = ".a"
+    output_prefix = "lib"
+    description = "AR {{output}}"
+  }
+
+  tool("link") {
+    outfile = "{{output_dir}}/{{target_output_name}}{{output_extension}}"
+    rspfile = "$outfile.rsp"
+    rspfile_content = "{{inputs}}"
+    command = "$link_driver $ldflags {{ldflags}} -o $outfile @$rspfile {{libs}} $ldlibs"
+    outputs = [ outfile ]
+    default_output_dir = "{{root_out_dir}}"
+    description = "LINK $outfile"
+  }
+
+  tool("solink") {
+    outfile = "{{output_dir}}/{{target_output_name}}{{output_extension}}"
+    command = "echo solink-unsupported-on-horizon && false"
+    outputs = [ outfile ]
+    description = "SOLINK (unsupported)"
+  }
+
+  tool("stamp") {
+    command = "touch {{output}}"
+    description = "STAMP {{output}}"
+  }
+
+  tool("copy") {
+    # NOTE: this runs on the host (macOS). GNU 'cp -afd' is not portable;
+    # macOS cp has no -d (and -a already preserves symlinks).
+    command = "cp -af {{source}} {{output}}"
+    description = "COPY {{source}} {{output}}"
+  }
+
+  toolchain_args = {
+    current_os = "horizon"
+    current_cpu = "arm64"
+    is_clang = true
+  }
+}

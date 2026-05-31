@@ -1,0 +1,358 @@
+diff --git a/include/v8config.h b/include/v8config.h
+index 1b560f0b..6177cfce 100644
+--- a/include/v8config.h
++++ b/include/v8config.h
+@@ -183,6 +183,14 @@ path. Add it with -I<path> to the command line
+ # define V8_OS_POSIX 1
+ # define V8_OS_ZOS 1
+ # define V8_OS_STRING "zos"
++
++#elif defined(__SWITCH__)
++// Nintendo Switch (devkitA64 / libnx / newlib). Treated as POSIX-ish: newlib
++// provides pthreads, sem_t, etc. V8_OS_HORIZON gates Switch-specific paths
++// (memory management via libnx virtmem, JIT via libnx jit_*).
++# define V8_OS_HORIZON 1
++# define V8_OS_POSIX 1
++# define V8_OS_STRING "horizon"
+ #endif
+ 
+ // -----------------------------------------------------------------------------
+diff --git a/src/base/logging.cc b/src/base/logging.cc
+index fef51b12..92893d25 100644
+--- a/src/base/logging.cc
++++ b/src/base/logging.cc
+@@ -8,6 +8,10 @@
+ #include <cstdarg>
+ #include <cstdio>
+ #include <cstdlib>
++#if defined(__SWITCH__)
++#include <fcntl.h>
++#include <unistd.h>
++#endif
+ 
+ #include "src/base/debug/stack_trace.h"
+ #include "src/base/platform/platform.h"
+@@ -89,6 +93,23 @@ void FatalOOM(OOMType type, const char* msg) {
+   // contains the fallback implementation if no callback has been installed.
+ 
+   const char* type_str = type == OOMType::kProcess ? "process" : "JavaScript";
++
++#if defined(__SWITCH__)
++  {
++    char b[640];
++    int n = snprintf(b, sizeof(b), "[FatalOOM] %s OOM: %s\n", type_str,
++                     msg ? msg : "");
++    if (n < 0) n = 0;
++    if (n > (int)sizeof(b)) n = sizeof(b);
++    int fd = ::open("sdmc:/hello-v8-fatal.log",
++                    O_WRONLY | O_CREAT | O_APPEND, 0666);
++    if (fd >= 0) {
++      ::write(fd, b, n);
++      ::close(fd);
++    }
++  }
++#endif
++
+   OS::PrintError("\n\n#\n# Fatal %s out of memory: %s\n#", type_str, msg);
+ 
+   v8::base::PrintStackTraceIfAvailable();
+@@ -102,6 +123,30 @@ void FatalOOM(OOMType type, const char* msg) {
+ }
+ 
+ void FatalNoSecurityImpact(const char* format, ...) {
++#if defined(__SWITCH__)
++  // Horizon bring-up: capture the fatal message to the SD card FIRST, using
++  // low-level open/write (NOT fopen/stdio, which may be wedged in this fatal
++  // context) so it reliably survives the abort.
++  {
++    char b[512];
++    va_list a2;
++    va_start(a2, format);
++    int n = vsnprintf(b, sizeof(b), format, a2);
++    va_end(a2);
++    if (n < 0) n = 0;
++    if (n > (int)sizeof(b) - 1) n = sizeof(b) - 1;
++    int fd = ::open("sdmc:/hello-v8-fatal.log",
++                    O_WRONLY | O_CREAT | O_APPEND, 0666);
++    if (fd >= 0) {
++      const char* tag = "[FatalNoSecurityImpact] ";
++      ::write(fd, tag, 24);
++      ::write(fd, b, n);
++      ::write(fd, "\n", 1);
++      ::close(fd);
++    }
++  }
++#endif
++
+   OS::PrintError("\n\n#\n# Fatal error with no security impact:\n# ");
+ 
+   va_list arguments;
+@@ -198,6 +243,22 @@ void V8_Fatal(const char* format, ...) {
+   FailureMessage message(format, arguments);
+   va_end(arguments);
+ 
++#if defined(__SWITCH__)
++  {
++    char b[640];
++    int n = snprintf(b, sizeof(b), "[V8_Fatal] %s:%d %s\n", file ? file : "",
++                     line, message.message_ ? message.message_ : "");
++    if (n < 0) n = 0;
++    if (n > (int)sizeof(b)) n = sizeof(b);
++    int fd = ::open("sdmc:/hello-v8-fatal.log",
++                    O_WRONLY | O_CREAT | O_APPEND, 0666);
++    if (fd >= 0) {
++      ::write(fd, b, n);
++      ::close(fd);
++    }
++  }
++#endif
++
+   if (v8::base::g_fatal_function != nullptr) {
+     v8::base::g_fatal_function(file, line, message.message_);
+   }
+diff --git a/src/base/memcopy.h b/src/base/memcopy.h
+index b1d8a36b..b9ee79fa 100644
+--- a/src/base/memcopy.h
++++ b/src/base/memcopy.h
+@@ -7,6 +7,8 @@
+ 
+ #include <stdlib.h>
+ 
++#include <climits>  // CHAR_BIT (not transitively provided by newlib)
++
+ #include <atomic>
+ 
+ #include "include/v8config.h"
+diff --git a/src/base/platform/platform-posix-time.cc b/src/base/platform/platform-posix-time.cc
+index b3219f05..7a04f73f 100644
+--- a/src/base/platform/platform-posix-time.cc
++++ b/src/base/platform/platform-posix-time.cc
+@@ -14,8 +14,14 @@ const char* PosixDefaultTimezoneCache::LocalTimezone(double time) {
+   time_t tv = static_cast<time_t>(std::floor(time / msPerSecond));
+   struct tm tm;
+   struct tm* t = localtime_r(&tv, &tm);
+-  if (!t || !t->tm_zone) return "";
++  if (!t) return "";
++#if V8_OS_HORIZON
++  // newlib's struct tm has no tm_zone; use the tzname[] globals instead.
++  return tzname[t->tm_isdst > 0 ? 1 : 0];
++#else
++  if (!t->tm_zone) return "";
+   return t->tm_zone;
++#endif
+ }
+ 
+ double PosixDefaultTimezoneCache::LocalTimeOffset(double time_ms, bool is_utc) {
+@@ -25,9 +31,16 @@ double PosixDefaultTimezoneCache::LocalTimeOffset(double time_ms, bool is_utc) {
+   struct tm tm;
+   struct tm* t = localtime_r(&tv, &tm);
+   DCHECK_NOT_NULL(t);
++#if V8_OS_HORIZON
++  // newlib has no tm_gmtoff; derive from the _timezone global (seconds west of
++  // UTC, so negate) and add back DST.
++  return static_cast<double>(-_timezone * msPerSecond +
++                             (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
++#else
+   // tm_gmtoff includes any daylight savings offset, so subtract it.
+   return static_cast<double>(t->tm_gmtoff * msPerSecond -
+                              (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
++#endif
+ }
+ 
+ }  // namespace base
+diff --git a/src/base/platform/platform-posix.cc b/src/base/platform/platform-posix.cc
+index db836945..369a6637 100644
+--- a/src/base/platform/platform-posix.cc
++++ b/src/base/platform/platform-posix.cc
+@@ -74,10 +74,16 @@
+ #include <sys/resource.h>
+ #endif
+ 
+-#if !defined(_AIX) && !defined(V8_OS_FUCHSIA) && !V8_OS_ZOS
++#if !defined(_AIX) && !defined(V8_OS_FUCHSIA) && !V8_OS_ZOS && !V8_OS_HORIZON
++// newlib (Switch) has no <sys/syscall.h>; the syscall() uses below are all
++// guarded by V8_OS_LINUX and fall back to portable paths on Horizon.
+ #include <sys/syscall.h>
+ #endif
+ 
++#if V8_OS_HORIZON
++#include <switch.h>  // threadGetSelf() for stack bounds
++#endif
++
+ #if V8_OS_FREEBSD || V8_OS_DARWIN || V8_OS_OPENBSD || V8_OS_SOLARIS
+ #define MAP_ANONYMOUS MAP_ANON
+ #endif
+@@ -94,6 +100,12 @@ extern int madvise(caddr_t, size_t, int);
+ #define MADV_FREE MADV_DONTNEED
+ #endif
+ 
++#if V8_OS_HORIZON && !defined(PTHREAD_STACK_MIN)
++// newlib does not define PTHREAD_STACK_MIN; libnx threads default well above
++// this. 16 KiB is a safe floor matching common platform minimums.
++#define PTHREAD_STACK_MIN (16 * 1024)
++#endif
++
+ #if defined(V8_LIBC_GLIBC)
+ extern "C" void* __libc_stack_end;
+ #endif
+@@ -960,8 +972,8 @@ int OS::GetUserTime(uint32_t* secs, uint32_t* usecs) {
+ #endif
+ 
+ int OS::GetPeakMemoryUsageKb() {
+-#if defined(V8_OS_FUCHSIA)
+-  // Fuchsia does not implement getrusage()
++#if defined(V8_OS_FUCHSIA) || defined(V8_OS_HORIZON)
++  // Fuchsia/Horizon: getrusage() has no ru_maxrss field.
+   return -1;
+ #elif defined(V8_OS_ZOS)
+   // TODO(v8:342445981): zos - rusage struct doesn't yet include ru_maxrss
+@@ -1442,7 +1454,21 @@ bool MainThreadIsCurrentThread() {
+ 
+ // static
+ Stack::StackSlot Stack::ObtainCurrentThreadStackStart() {
+-#if V8_OS_ZOS
++#if V8_OS_HORIZON
++  // newlib has no pthread_getattr_np. libnx tracks the stack for threads it
++  // creates. IMPORTANT: a libnx thread runs on its `stack_mirror` alias (the
++  // svcMapMemory'd address it was launched with), NOT `stack_mem` (the heap
++  // backing). The running SP lives in the mirror range, so the stack START
++  // must be computed from stack_mirror; using stack_mem gives an address in a
++  // different region and makes V8's stack limit nonsensical (spurious
++  // "Maximum call stack size exceeded"). The main thread isn't a libnx Thread
++  // (returns nullptr); V8 tolerates that.
++  ::Thread* self = threadGetSelf();
++  if (self != nullptr && self->stack_mirror != nullptr) {
++    return reinterpret_cast<uint8_t*>(self->stack_mirror) + self->stack_sz;
++  }
++  return nullptr;
++#elif V8_OS_ZOS
+   return __get_stack_start();
+ #elif V8_OS_OPENBSD
+   stack_t stack;
+diff --git a/src/base/strings.h b/src/base/strings.h
+index c3015e72..6f602efc 100644
+--- a/src/base/strings.h
++++ b/src/base/strings.h
+@@ -5,6 +5,8 @@
+ #ifndef V8_BASE_STRINGS_H_
+ #define V8_BASE_STRINGS_H_
+ 
++#include <cstdarg>  // va_list (not transitively provided by newlib)
++
+ #include "src/base/base-export.h"
+ #include "src/base/macros.h"
+ #include "src/base/vector.h"
+diff --git a/src/base/sys-info.cc b/src/base/sys-info.cc
+index 4bab9166..ddd7ef47 100644
+--- a/src/base/sys-info.cc
++++ b/src/base/sys-info.cc
+@@ -9,11 +9,16 @@
+ #include <sys/time.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+-#if !V8_OS_FUCHSIA
++#if !V8_OS_FUCHSIA && !V8_OS_HORIZON
++// newlib's <sys/resource.h> has no getrlimit/struct rlimit.
+ #include <sys/resource.h>
+ #endif
+ #endif
+ 
++#if V8_OS_HORIZON
++#include <switch.h>  // svcGetInfo, InfoType_*
++#endif
++
+ #if V8_OS_BSD
+ #include <sys/sysctl.h>
+ #endif
+@@ -64,7 +69,16 @@ int SysInfo::NumberOfProcessors() {
+ 
+ // static
+ int64_t SysInfo::AmountOfPhysicalMemory() {
+-#if V8_OS_DARWIN
++#if V8_OS_HORIZON
++  // newlib's sysconf(_SC_PHYS_PAGES) returns -1; query the kernel for the total
++  // memory available to this process instead.
++  uint64_t total = 0;
++  if (R_FAILED(svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE,
++                          0))) {
++    return 0;
++  }
++  return static_cast<int64_t>(total);
++#elif V8_OS_DARWIN
+   int mib[2] = {CTL_HW, HW_MEMSIZE};
+   int64_t memsize = 0;
+   size_t len = sizeof(memsize);
+@@ -120,6 +134,15 @@ int64_t SysInfo::AmountOfPhysicalMemory() {
+ int64_t SysInfo::AmountOfVirtualMemory() {
+ #if V8_OS_WIN || V8_OS_FUCHSIA
+   return 0;
++#elif V8_OS_HORIZON
++  // newlib has no getrlimit; use the kernel's ASLR (address space) region size,
++  // which is the closest analog to the process's virtual memory limit.
++  uint64_t aslr_size = 0;
++  if (R_FAILED(svcGetInfo(&aslr_size, InfoType_AslrRegionSize,
++                          CUR_PROCESS_HANDLE, 0))) {
++    return 0;
++  }
++  return static_cast<int64_t>(aslr_size);
+ #elif V8_OS_POSIX
+   struct rlimit rlim;
+   int result = getrlimit(RLIMIT_DATA, &rlim);
+diff --git a/src/libsampler/sampler.cc b/src/libsampler/sampler.cc
+index 16cd153d..6381074e 100644
+--- a/src/libsampler/sampler.cc
++++ b/src/libsampler/sampler.cc
+@@ -19,7 +19,8 @@
+ 
+ #include "src/base/platform/memory-protection-key.h"
+ 
+-#if !V8_OS_QNX && !V8_OS_AIX && !V8_OS_ZOS
++#if !V8_OS_QNX && !V8_OS_AIX && !V8_OS_ZOS && !V8_OS_HORIZON
++// newlib (Switch) has no <sys/syscall.h>; sampler.cc does not call syscall().
+ #include <sys/syscall.h>
+ #endif
+ 
+@@ -321,6 +322,16 @@ class Sampler::PlatformData {
+   zx_handle_t profiled_thread_ = ZX_HANDLE_INVALID;
+ };
+ 
++#elif V8_OS_HORIZON
++
++// Switch (Horizon): signal-based sampling is unsupported (no USE_SIGNALS), so
++// PlatformData carries no state. Provided only so Sampler can hold a
++// unique_ptr<PlatformData>.
++class Sampler::PlatformData {
++ public:
++  PlatformData() = default;
++};
++
+ #endif  // USE_SIGNALS
+ 
+ #if defined(USE_SIGNALS)
+@@ -691,6 +702,11 @@ void Sampler::DoSample() {
+ #undef ZX_THREAD_STATE_GENERAL_REGS
+ #endif
+ 
++#elif V8_OS_HORIZON
++
++// Switch (Horizon): no signal-based sampling. CPU profiler sampling is a no-op.
++void Sampler::DoSample() {}
++
+ #endif  // USE_SIGNALS
+ 
+ }  // namespace sampler
+diff --git a/src/libsampler/sampler.h b/src/libsampler/sampler.h
+index 9c75d3a0..422daf16 100644
+--- a/src/libsampler/sampler.h
++++ b/src/libsampler/sampler.h
+@@ -13,7 +13,9 @@
+ #include "src/base/lazy-instance.h"
+ #include "src/base/macros.h"
+ 
+-#if V8_OS_POSIX && !V8_OS_CYGWIN && !V8_OS_FUCHSIA
++// Horizon (Switch/newlib) has no <ucontext.h> and no signal-based sampling
++// support; the CPU profiler's signal sampler is disabled there.
++#if V8_OS_POSIX && !V8_OS_CYGWIN && !V8_OS_FUCHSIA && !V8_OS_HORIZON
+ #define USE_SIGNALS
+ #endif
+ 

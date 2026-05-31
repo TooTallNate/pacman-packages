@@ -1,0 +1,25 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index a19ec521..d9973669 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -7378,6 +7378,20 @@ v8_component("v8_libbase") {
+       "src/base/debug/stack_trace_zos.cc",
+       "src/base/platform/platform-zos.cc",
+     ]
++  } else if (is_horizon) {
++    # Nintendo Switch (devkitA64 / libnx). No execinfo/backtrace, so use the
++    # empty stack-trace implementation rather than stack_trace_posix.cc.
++    sources += [
++      "src/base/debug/stack_trace_horizon.cc",
++      "src/base/platform/horizon/atomic-horizon.cc",
++      "src/base/platform/horizon/libc-horizon.cc",
++      "src/base/platform/horizon/mman-horizon.cc",
++      "src/base/platform/platform-horizon.cc",
++    ]
++
++    # platform-posix.cc includes <sys/mman.h>; newlib has none, so put our shim
++    # dir on the include path for this target.
++    include_dirs = [ "src/base/platform/horizon" ]
+   }
+ 
+   if (v8_current_cpu == "mips64") {

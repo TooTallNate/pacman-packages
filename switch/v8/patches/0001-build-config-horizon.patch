@@ -1,0 +1,69 @@
+diff --git a/config/BUILDCONFIG.gn b/config/BUILDCONFIG.gn
+index 12595c1e3..afddcf5c4 100644
+--- a/config/BUILDCONFIG.gn
++++ b/config/BUILDCONFIG.gn
+@@ -283,6 +283,9 @@ if (target_os == "android") {
+   _default_toolchain = "//build/toolchain/win:uwp_$target_cpu"
+ } else if (target_os == "aix") {
+   _default_toolchain = "//build/toolchain/aix:$target_cpu"
++} else if (target_os == "horizon") {
++  # Nintendo Switch (devkitA64 / libnx). Requires custom_toolchain to be set.
++  _default_toolchain = "//build/toolchain/horizon:aarch64_switch"
+ } else if (target_os == "zos") {
+   _default_toolchain = "//build/toolchain/zos:$target_cpu"
+ } else if (target_os == "emscripten") {
+@@ -324,6 +327,7 @@ if (custom_toolchain != "") {
+ is_android = current_os == "android"
+ is_chromeos = current_os == "chromeos"
+ is_fuchsia = current_os == "fuchsia"
++is_horizon = current_os == "horizon"  # Nintendo Switch (devkitA64/libnx)
+ is_ios = current_os == "ios"
+ is_linux = current_os == "linux"
+ is_mac = current_os == "mac"
+diff --git a/config/clang/BUILD.gn b/config/clang/BUILD.gn
+index c38670a24..0835533cb 100644
+--- a/config/clang/BUILD.gn
++++ b/config/clang/BUILD.gn
+@@ -160,7 +160,9 @@ group("llvm-symbolizer_data") {
+ }
+ 
+ template("clang_lib") {
+-  if (!defined(invoker.libname) || is_wasm) {
++  # On Horizon (Switch) we link with the devkitA64 GCC driver, which supplies
++  # compiler builtins via libgcc. Skip clang_rt entirely.
++  if (!defined(invoker.libname) || is_wasm || is_horizon) {
+     not_needed(invoker, "*")
+     config(target_name) {
+     }
+diff --git a/config/compiler/BUILD.gn b/config/compiler/BUILD.gn
+index e1da11405..0e3d37868 100644
+--- a/config/compiler/BUILD.gn
++++ b/config/compiler/BUILD.gn
+@@ -297,6 +297,11 @@ config("default_include_dirs") {
+     "//",
+     root_gen_dir,
+   ]
++  if (is_horizon) {
++    # Make V8's libnx-backed <sys/mman.h> shim visible to ALL targets
++    # (abseil/zlib/V8); newlib has no <sys/mman.h>.
++    include_dirs += [ "//src/base/platform/horizon" ]
++  }
+ }
+ 
+ # Compiler instrumentation can introduce dependencies in DSOs to symbols in
+diff --git a/config/compiler_cpu_abi.gn b/config/compiler_cpu_abi.gn
+index ae62bab58..6fb469137 100644
+--- a/config/compiler_cpu_abi.gn
++++ b/config/compiler_cpu_abi.gn
+@@ -45,7 +45,10 @@ if (is_chromeos_device && is_chromeos) {
+   }
+ }
+ 
+-if ((is_posix && !is_apple) || is_fuchsia) {
++if (((is_posix && !is_apple) || is_fuchsia) && !is_horizon) {
++  # On Horizon (Switch) the custom toolchain sets --target/-march/-mtune
++  # explicitly (devkitA64 aarch64-none-elf), so skip this Linux-oriented arch
++  # flag injection entirely.
+   # simplicity we always explicitly set the architecture.
+   if (current_cpu == "x64") {
+     if (is_clang && !is_android && !is_fuchsia && !is_chromeos_device) {
