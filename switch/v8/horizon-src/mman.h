@@ -44,7 +44,9 @@ extern "C" {
 #define MAP_ANONYMOUS MAP_ANON
 #define MAP_NORESERVE 0x0040
 #define MAP_LAZY 0x0000  // unsupported; treated as no-op
-#define MAP_JIT 0x0000   // unsupported; JIT uses libnx jit_*
+// MAP_JIT: serve this allocation from the libnx jit_* code arena (rx addresses,
+// with a writable rw alias). Set by platform-posix.cc for executable memory.
+#define MAP_JIT 0x0800
 
 #define MAP_FAILED ((void*)-1)
 

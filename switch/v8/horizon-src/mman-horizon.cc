@@ -57,6 +57,94 @@ static void DiagLog(const char* fmt, ...) {
   fclose(f);
 }
 
+// ---------------------------------------------------------------------------
+// Executable code arena (full JIT).
+//
+// Horizon enforces W^X, so executable memory comes from a libnx jit_*
+// (JitType_CodeMemory) region that exposes TWO permanently-mapped aliases of
+// the same physical pages: rx (executable) and rw (writable). V8 uses the rx
+// address everywhere; code WRITES are redirected to rw = rx + g_jit_delta (see
+// horizon_jit_rw_delta below, consumed by WritableJitAllocation).
+//
+// mmap(MAP_JIT) bump-allocates rx address space from this region. mprotect with
+// PROT_EXEC is a no-op (the rx alias is already executable; the rw alias is
+// already writable). One jitCreate region for the whole V8 code range.
+// ---------------------------------------------------------------------------
+class CodeArena {
+ public:
+  bool EnsureInit(size_t need) {
+    if (initialized_) return rx_base_ != 0;
+    initialized_ = true;
+    // Size the region to cover V8's code range request (round to MB), with a
+    // floor. jitCreate maps the whole region twice, so don't over-reserve.
+    size_t sz = need < (size_t{64} << 20) ? (size_t{64} << 20) : need;
+    sz = (sz + 0xFFFFF) & ~size_t{0xFFFFF};
+    Result rc = jitCreate(&jit_, sz);
+    if (R_FAILED(rc)) {
+      DiagLog("mman: jitCreate(0x%zx) FAILED rc=0x%x\n", sz, rc);
+      return false;
+    }
+    // Make the region executable once; for JitType_CodeMemory both aliases stay
+    // mapped permanently and this just does the initial cache sync.
+    jitTransitionToExecutable(&jit_);
+    rx_base_ = reinterpret_cast<uintptr_t>(jitGetRxAddr(&jit_));
+    uintptr_t rw_base = reinterpret_cast<uintptr_t>(jitGetRwAddr(&jit_));
+    delta_ = rw_base - rx_base_;  // rw = rx + delta
+    size_ = sz;
+    next_ = rx_base_;
+    DiagLog("mman: code arena rx=%p rw=%p size=0x%zx delta=0x%lx type=%d\n",
+            (void*)rx_base_, (void*)rw_base, sz, (long)delta_, jit_.type);
+    return true;
+  }
+
+  void* Allocate(size_t size, size_t alignment) {
+    size = RoundUpPage(size);
+    if (alignment < kPage) alignment = kPage;
+    if (!EnsureInit(size)) return nullptr;
+    uintptr_t at = (next_ + alignment - 1) & ~(alignment - 1);
+    if (at + size > rx_base_ + size_) {
+      DiagLog("mman: code arena OOM (need 0x%zx at %p, end %p)\n", size,
+              (void*)at, (void*)(rx_base_ + size_));
+      return nullptr;
+    }
+    next_ = at + size;
+    return reinterpret_cast<void*>(at);  // rx address
+  }
+
+  bool Contains(uintptr_t a) const {
+    return rx_base_ != 0 && a >= rx_base_ && a < rx_base_ + size_;
+  }
+  intptr_t delta() const { return delta_; }
+
+  // Sync caches after a batch of writes through the rw alias. `rx` is the code
+  // (execute) address; the rw write target is rx + delta_.
+  void Sync(uintptr_t rx, size_t n) {
+    if (!Contains(rx)) return;
+    armDCacheFlush(reinterpret_cast<void*>(rx + delta_), n);
+    armICacheInvalidate(reinterpret_cast<void*>(rx), n);
+  }
+
+  void Teardown() {
+    if (rx_base_ == 0) return;
+    jitClose(&jit_);
+    rx_base_ = 0;
+    size_ = 0;
+    next_ = 0;
+    delta_ = 0;
+    initialized_ = false;
+  }
+
+ private:
+  bool initialized_ = false;
+  Jit jit_{};
+  uintptr_t rx_base_ = 0;
+  uintptr_t next_ = 0;
+  size_t size_ = 0;
+  intptr_t delta_ = 0;
+};
+
+CodeArena g_code;
+
 // A single committed mapping: heap block `src` aliased at [dst, dst+size).
 struct Region {
   uintptr_t dst;
@@ -91,7 +179,14 @@ class Arena {
     }
     base_ = reinterpret_cast<uintptr_t>(slice);
     next_free_ = base_;
-    DiagLog("mman: arena base=%p size=0x%zx\n", slice, arena_size_);
+    num_slabs_ = (arena_size_ + kSlab - 1) / kSlab;
+    slab_src_ = static_cast<void**>(calloc(num_slabs_, sizeof(void*)));
+    if (!slab_src_) {
+      base_ = 0;
+      return false;
+    }
+    DiagLog("mman: arena base=%p size=0x%zx slabs=%zu\n", slice, arena_size_,
+            num_slabs_);
     return true;
   }
 
@@ -99,132 +194,109 @@ class Arena {
     return a >= base_ && (a + len) <= base_ + arena_size_;
   }
 
-  // Map `size` bytes at address `at` (must be free arena space). One heap block,
-  // one svcMapMemory. Returns true on success.
-  bool MapAt(uintptr_t at, size_t size) {
-    size = RoundUpPage(size);
-    void* src = memalign(kPage, size);
-    if (!src) return false;
-    Result rc = svcMapMemory(reinterpret_cast<void*>(at), src, size);
-    if (R_FAILED(rc)) {
-      if (!logged_fail_) {
-        logged_fail_ = true;
-        DiagLog("mman: svcMapMemory FAILED rc=0x%x at=%p size=0x%zx\n", rc,
-                (void*)at, size);
+  // Commit the slabs covering [addr, addr+size) on demand (lazy commit). Only
+  // slabs actually touched get backed by svcMapMemory -> a PROT_NONE reservation
+  // costs no committed memory. One svcMapMemory per 16 MiB slab keeps the kernel
+  // mapping count tiny (vs per-allocation, which exhausted the block limit).
+  bool CommitRange(uintptr_t addr, size_t size) {
+    if (size == 0) return true;
+    uintptr_t end = addr + size;
+    size_t first = (addr - base_) / kSlab;
+    size_t last = (end - 1 - base_) / kSlab;
+    for (size_t i = first; i <= last && i < num_slabs_; i++) {
+      if (slab_src_[i] != nullptr) continue;  // already committed
+      uintptr_t slab_addr = base_ + i * kSlab;
+      size_t slab = kSlab;
+      if (slab_addr + slab > base_ + arena_size_) {
+        slab = (base_ + arena_size_) - slab_addr;
       }
-      free(src);
-      return false;
+      void* src = memalign(kPage, slab);
+      if (!src) {
+        DiagLog("mman: DATA slab memalign(0x%zx) failed\n", slab);
+        return false;
+      }
+      Result rc = svcMapMemory(reinterpret_cast<void*>(slab_addr), src, slab);
+      if (R_FAILED(rc)) {
+        DiagLog("mman: DATA slab svcMapMemory FAILED rc=0x%x at=%p size=0x%zx "
+                "(slab %zu)\n", rc, (void*)slab_addr, slab, i);
+        free(src);
+        return false;
+      }
+      std::memset(reinterpret_cast<void*>(slab_addr), 0, slab);
+      slab_src_[i] = src;
+      if (++slab_count_ <= 6 || (slab_count_ % 8) == 0) {
+        DiagLog("mman: DATA slab #%u (idx %zu) committed\n", slab_count_, i);
+      }
     }
-    std::memset(reinterpret_cast<void*>(at), 0, size);
-    if (++map_count_ <= 3 || (map_count_ % 64) == 0) {
-      DiagLog("mman: map #%u at=%p size=0x%zx (ok)\n", map_count_, (void*)at,
-              size);
-    }
-    Region* r = static_cast<Region*>(malloc(sizeof(Region)));
-    if (!r) {
-      svcUnmapMemory(reinterpret_cast<void*>(at), src, size);
-      free(src);
-      return false;
-    }
-    r->dst = at;
-    r->src = src;
-    r->size = size;
-    r->next = regions_;
-    regions_ = r;
     return true;
   }
 
-  // Bump-allocate `size` bytes of fresh, committed address space.
-  void* Allocate(size_t size) {
+  // Reserve `size` bytes of address space WITHOUT committing (lazy). Commit
+  // happens on first write access via CommitRange (from mprotect RW / a
+  // read-write mmap).
+  void* Reserve(size_t size) {
     size = RoundUpPage(size);
     if (!EnsureInit()) return nullptr;
     uintptr_t at = RoundUpPageAddr(next_free_);
-    if (at + size > base_ + arena_size_) return nullptr;
-    if (!MapAt(at, size)) return nullptr;
+    if (at + size > base_ + arena_size_) {
+      DiagLog("mman: DATA arena address-space OOM: need 0x%zx, reserved %zu of "
+              "%zu MB\n", size, (size_t)((next_free_ - base_) >> 20),
+              (size_t)(arena_size_ >> 20));
+      return nullptr;
+    }
     next_free_ = at + size;
     return reinterpret_cast<void*>(at);
   }
 
-  // Decommit [addr, addr+size). Regions fully covered are dropped; partially
-  // covered regions are unmapped and their surviving prefix/suffix re-mapped at
-  // their ORIGINAL addresses.
-  void Decommit(uintptr_t addr, size_t size) {
-    if (base_ == 0) return;
-    addr &= ~(uintptr_t{kPage} - 1);
-    size = RoundUpPage(size);
-    uintptr_t end = addr + size;
-
-    Region** pp = &regions_;
-    while (*pp) {
-      Region* r = *pp;
-      uintptr_t rs = r->dst, re = r->dst + r->size;
-      if (re <= addr || rs >= end) {
-        pp = &r->next;
-        continue;
-      }
-      // Partial overlap: the surviving prefix [rs,addr) and suffix [end,re) must
-      // KEEP their existing contents (e.g. V8 trims a page tail but keeps the
-      // head's live objects). svcUnmapMemory un-aliases the whole region, so we
-      // save survivor bytes first, then re-map fresh and restore them.
-      uintptr_t pre_lo = rs, pre_hi = (addr > rs) ? addr : rs;
-      uintptr_t suf_lo = (end < re) ? end : re, suf_hi = re;
-      size_t pre_n = (pre_hi > pre_lo) ? (pre_hi - pre_lo) : 0;
-      size_t suf_n = (suf_hi > suf_lo) ? (suf_hi - suf_lo) : 0;
-
-      void* pre_save = nullptr;
-      void* suf_save = nullptr;
-      if (pre_n) {
-        pre_save = malloc(pre_n);
-        if (pre_save) std::memcpy(pre_save, reinterpret_cast<void*>(pre_lo), pre_n);
-      }
-      if (suf_n) {
-        suf_save = malloc(suf_n);
-        if (suf_save) std::memcpy(suf_save, reinterpret_cast<void*>(suf_lo), suf_n);
-      }
-
-      *pp = r->next;
-      svcUnmapMemory(reinterpret_cast<void*>(r->dst), r->src, r->size);
-      free(r->src);
-      free(r);
-
-      if (pre_n && MapAt(pre_lo, pre_n) && pre_save) {
-        std::memcpy(reinterpret_cast<void*>(pre_lo), pre_save, pre_n);
-      }
-      if (suf_n && MapAt(suf_lo, suf_n) && suf_save) {
-        std::memcpy(reinterpret_cast<void*>(suf_lo), suf_save, suf_n);
-      }
-      free(pre_save);
-      free(suf_save);
-      pp = &regions_;  // list changed
+  // Reserve + immediately commit (for read-write mmap).
+  void* Allocate(size_t size) {
+    void* p = Reserve(size);
+    if (!p) return nullptr;
+    if (!CommitRange(reinterpret_cast<uintptr_t>(p), RoundUpPage(size))) {
+      return nullptr;
     }
+    return p;
   }
 
+  // Decommit is a no-op: slabs stay mapped until Teardown. V8's alignment-trim
+  // frees (munmap of prefix/suffix) just leave committed-but-unused pages; the
+  // bump allocator never reclaims anyway. This avoids per-free svcUnmapMemory
+  // (mapping churn / kernel block exhaustion) and the survivor-remap dance.
+  void Decommit(uintptr_t addr, size_t size) {
+    (void)addr;
+    (void)size;
+  }
+
+  // Make [addr,size) writable. With lazy commit, V8 calls SetPermissions(RW) on
+  // pages it reserved (PROT_NONE) -> we must COMMIT them here. Pages stay RW
+  // (no downgrade) since the rw alias must remain writable.
   void SetPerm(uintptr_t addr, size_t size, u32 perm) {
     if (base_ == 0 || !Contains(addr, size)) return;
-    // BRING-UP EXPERIMENT: never downgrade below RW. svcSetMemoryPermission to
-    // Perm_R/None would fault if V8 (or our code) later writes; keeping pages RW
-    // sidesteps W^X faults while we get the engine running. Revisit for
-    // security once it works. Perm_None guard pages also stay RW (harmless).
-    (void)perm;
-    svcSetMemoryPermission(reinterpret_cast<void*>(addr), RoundUpPage(size),
-                           Perm_Rw);
+    if (perm != Perm_None) {
+      // Committing (RW / R). Ensure the slabs are backed.
+      CommitRange(addr, RoundUpPage(size));
+    }
+    // Keep pages RW regardless (rw alias stays writable); don't downgrade.
   }
 
-  // Unmap ALL mappings and release the address-space reservation. Required
-  // before the .nro returns to hbloader/hbmenu: libnx's exit does NOT unmap
-  // manual svcMapMemory regions, so leaked aliases corrupt the next homebrew's
-  // address space and crash it.
+  // Unmap ALL slabs + release the address-space reservation. Required before the
+  // .nro returns to hbloader/hbmenu: libnx's exit does NOT unmap manual
+  // svcMapMemory regions, so leaked aliases corrupt the next process.
   void Teardown() {
     if (base_ == 0) return;
-    Region* r = regions_;
-    while (r != nullptr) {
-      Region* next = r->next;
-      svcUnmapMemory(reinterpret_cast<void*>(r->dst), r->src, r->size);
-      free(r->src);
-      free(r);
-      r = next;
+    for (size_t i = 0; i < num_slabs_; i++) {
+      if (slab_src_[i] == nullptr) continue;
+      uintptr_t slab_addr = base_ + i * kSlab;
+      size_t slab = kSlab;
+      if (slab_addr + slab > base_ + arena_size_) {
+        slab = (base_ + arena_size_) - slab_addr;
+      }
+      svcUnmapMemory(reinterpret_cast<void*>(slab_addr), slab_src_[i], slab);
+      free(slab_src_[i]);
+      slab_src_[i] = nullptr;
     }
-    regions_ = nullptr;
+    free(slab_src_);
+    slab_src_ = nullptr;
     if (reservation_ != nullptr) {
       virtmemLock();
       virtmemRemoveReservation(reservation_);
@@ -234,18 +306,20 @@ class Arena {
     base_ = 0;
     next_free_ = 0;
     arena_size_ = 0;
+    num_slabs_ = 0;
     initialized_ = false;
   }
 
  private:
+  static constexpr size_t kSlab = size_t{16} << 20;  // 16 MiB commit slabs
   bool initialized_ = false;
   uintptr_t base_ = 0;
-  uintptr_t next_free_ = 0;
+  uintptr_t next_free_ = 0;  // reserved (address-space) watermark
   size_t arena_size_ = 0;
+  size_t num_slabs_ = 0;
+  void** slab_src_ = nullptr;  // per-slab heap backing (nullptr = uncommitted)
   VirtmemReservation* reservation_ = nullptr;
-  Region* regions_ = nullptr;
-  bool logged_fail_ = false;
-  unsigned map_count_ = 0;
+  unsigned slab_count_ = 0;
 };
 
 Arena g_arena;
@@ -269,42 +343,56 @@ void* mmap(void* addr, size_t length, int prot, int flags, int fd,
   Lock lk;
   uintptr_t want = reinterpret_cast<uintptr_t>(addr);
 
+  // Executable (JIT) memory: serve rx addresses from the libnx jit_* code
+  // arena. V8 reserves the code range non-fixed (MAP_JIT, kNoAccessWillJitLater)
+  // then mprotects it executable; both are handled here / in mprotect.
+  if ((flags & MAP_JIT) && !(flags & MAP_FIXED)) {
+    void* p = g_code.Allocate(length, kPage);
+    return p ? p : MAP_FAILED;
+  }
+
   if (flags & MAP_FIXED) {
-    // Decommit-in-place (PROT_NONE) or recommit a sub-range.
-    if (prot == PROT_NONE) {
-      g_arena.Decommit(want, length);
-      return addr;
+    if (!g_arena.Contains(want, RoundUpPage(length))) {
+      if (g_code.Contains(want)) return addr;  // code arena rx addr V8 reuses
+      return MAP_FAILED;
     }
-    if (!g_arena.Contains(want, RoundUpPage(length))) return MAP_FAILED;
-    g_arena.Decommit(want, length);     // drop whatever's there
-    if (!g_arena.MapAt(want, length)) return MAP_FAILED;
-    if (!(prot & PROT_WRITE)) g_arena.SetPerm(want, length, Perm_R);
+    // MAP_FIXED at an in-arena addr: PROT_NONE = decommit-in-place (no-op, keep
+    // slabs); RW = (re)commit the slabs covering this range.
+    if (prot != PROT_NONE) g_arena.CommitRange(want, RoundUpPage(length));
     return addr;
   }
 
-  void* result = g_arena.Allocate(length);
+  // Lazy commit: PROT_NONE reservations only reserve address space (no backing,
+  // so V8's large cage/will-jit reservations cost no committed memory).
+  // Read/write mappings reserve + commit immediately.
+  void* result =
+      (prot == PROT_NONE) ? g_arena.Reserve(length) : g_arena.Allocate(length);
   if (result == nullptr) return MAP_FAILED;
-  if (prot == PROT_NONE) {
-    g_arena.SetPerm(reinterpret_cast<uintptr_t>(result), length, Perm_None);
-  } else if (!(prot & PROT_WRITE)) {
-    g_arena.SetPerm(reinterpret_cast<uintptr_t>(result), length, Perm_R);
-  }
   return result;
 }
 
 int munmap(void* addr, size_t length) {
   if (addr == nullptr || addr == MAP_FAILED) return -1;
   Lock lk;
-  g_arena.Decommit(reinterpret_cast<uintptr_t>(addr), length);
+  uintptr_t a = reinterpret_cast<uintptr_t>(addr);
+  // Code arena addresses are bump-allocated and freed wholesale at teardown;
+  // individual munmap of code pages is a no-op (V8 reuses the code range).
+  if (g_code.Contains(a)) return 0;
+  g_arena.Decommit(a, length);
   return 0;
 }
 
 int mprotect(void* addr, size_t length, int prot) {
+  Lock lk;
+  uintptr_t a = reinterpret_cast<uintptr_t>(addr);
+  // Code arena: rx alias is permanently executable, rw alias permanently
+  // writable. Permission changes (incl. kReadWriteExecute) are no-ops here;
+  // W^X is handled by the dual aliases + cache sync, not page permissions.
+  if (g_code.Contains(a)) return 0;
   u32 perm = (prot == PROT_NONE) ? Perm_None
              : (prot & PROT_WRITE) ? Perm_Rw
                                    : Perm_R;
-  Lock lk;
-  g_arena.SetPerm(reinterpret_cast<uintptr_t>(addr), length, perm);
+  g_arena.SetPerm(a, length, perm);
   return 0;
 }
 
@@ -329,7 +417,24 @@ int msync(void* addr, size_t length, int flags) {
 // hbloader/hbmenu so leaked svcMapMemory aliases don't corrupt the next process.
 void horizon_mman_teardown(void) {
   Lock lk;
+  g_code.Teardown();
   g_arena.Teardown();
 }
+
+// --- Full-JIT write redirection support (consumed by WritableJitAllocation) ---
+
+// If `rx_addr` is in the code arena, returns the delta to add to reach the
+// writable alias (rw = rx + delta). Returns 0 otherwise (non-code memory is
+// directly writable, no redirect needed).
+intptr_t horizon_jit_rw_delta(uintptr_t rx_addr) {
+  if (g_code.Contains(rx_addr)) return g_code.delta();
+  return 0;
+}
+
+// True if `addr` is an executable code-arena (rx) address.
+int horizon_jit_is_code(uintptr_t addr) { return g_code.Contains(addr) ? 1 : 0; }
+
+// Sync I/D caches for a code range after writes via the rw alias.
+void horizon_jit_sync(uintptr_t rx_addr, size_t n) { g_code.Sync(rx_addr, n); }
 
 }  // extern "C"

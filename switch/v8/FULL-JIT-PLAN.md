@@ -4,6 +4,50 @@ Goal: move from the working **jitless** V8 (Ignition interpreter only) to **full
 JIT** (Sparkplug/Maglev/TurboFan generate native AArch64 code at runtime),
 using libnx `jit_*` for executable memory.
 
+## ✅ ACHIEVED: full JIT runs on hardware
+
+`hello-v8-jit` (Sparkplug+TurboFan, `--always-sparkplug`) on a real Switch
+output:
+```
+[ck] compiling -> running
+V8 JIT result (sum 0..99999) = 4999950000   (correct)
+SUCCESS: V8 ran on Switch!
+```
+V8 baseline-compiled JS to native AArch64, wrote it through the rw alias,
+executed it through the rx alias, and produced the correct result — all within
+the constrained applet memory budget.
+
+### What it took (beyond enabling the JIT tiers in GN)
+
+1. **Code arena over libnx jit_*** (`mman-horizon.cc`, CodeArena): one
+   `jitCreate` CodeMemory region; `mmap(MAP_JIT)` serves rx addresses;
+   `delta = rw - rx` exposed via `horizon_jit_rw_delta()`; `FlushICache` ->
+   `armDCacheFlush(rw)+armICacheInvalidate(rx)` via `horizon_jit_sync()`.
+2. **MAP_JIT plumbing**: `GetFlagsForMemoryPermission` sets MAP_JIT for
+   will-jit/exec on Horizon, AND `PageAllocator::AllocatePages` must NOT
+   downgrade `kNoAccessWillJitLater` -> `kNoAccess` on Horizon (it did on all
+   non-Apple platforms, stripping our signal).
+3. **Code-write redirect to the rw alias** at every site that writes to an
+   executable (rx) page (all assume RwxMemoryWriteScope makes the page writable
+   in-place, impossible under Horizon W^X):
+   - `WritableJitAllocation`: WriteValue/WriteUnalignedValue/CopyCode/CopyData/
+     ClearBytes AND the WriteHeaderSlot/WriteProtectedPointerHeaderSlot family
+     (the latter was the InstructionStream header init — easy to miss).
+   - `WritableFreeSpace`: WriteHeaderSlot + ClearTagged (filler objects in code
+     free space) when `executable_`.
+   - `MemoryAllocator::AllocatePage`: the `new (chunk) MemoryChunk(...)` header
+     for executable chunks.
+   All gated `#if V8_OS_HORIZON`; the redirect is `addr + horizon_jit_rw_delta
+   (addr)` which is a no-op (delta 0) for non-code addresses.
+4. **Memory budget** (so it fits the album/hbloader applet, not just
+   full-memory mode): lazy commit in the data arena (PROT_NONE reservations cost
+   nothing; commit per-16MB-slab on first RW use -> few kernel mappings, low
+   footprint); 64 MB code range (`set_code_range_size_in_bytes`); modest heap
+   (`ConfigureDefaultsFromHeapSize(8MB, 128MB)`).
+
+Still to harden: Maglev (left off), broader workloads, perf, and proper W^X
+(currently data pages stay RW; revisit). But native JIT executes correctly.
+
 This is the hardest part of the port. This doc is the plan of record.
 
 ## Memory model decision (settled after a 2nd PoC)
