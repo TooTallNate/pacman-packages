@@ -6,6 +6,28 @@ using libnx `jit_*` for executable memory.
 
 This is the hardest part of the port. This doc is the plan of record.
 
+## Memory model decision (settled after a 2nd PoC)
+
+There is **no in-place same-address W^X flip** on Horizon. `svcSetProcessMemory
+Permission` only moves between None/R/Rw on CodeMutable memory; reaching `Rx`
+requires `svcMapProcessCodeMemory` on freshly-mapped CodeStatic memory. Both
+libnx jit types are therefore DUAL-ADDRESS:
+- `JitType_CodeMemory` (svcs 0x4B/0x4C): rw_addr AND rx_addr both permanently
+  mapped to the same physical pages. Write via rw, execute via rx, cache-flush
+  between. No unmap/remap. **Chosen** — best fit for V8's incremental patching.
+- `JitType_SetProcessMemoryPermission` (0x73/0x77/0x78): must unmap/remap the
+  whole region for each write (jitflip-poc confirmed Rw->Rx in place fails with
+  0xd401 InvalidMemoryState; the real flow is unmap/write-to-src/remap+Rx).
+  Heavy; rejected.
+
+So V8 keeps ALL addresses = rx (execute), and code WRITES are redirected to
+`rw = rx + delta`. `RwxMemoryWriteScope::SetWritable/SetExecutable` become
+near-no-ops (the rw alias is always writable); we cache-flush (armDCacheFlush on
+rw range + armICacheInvalidate on rx range) when a write scope closes.
+This is the dual-address delta-redirect (Option A below), validated workable by
+the original M0 jit-poc (pc-relative + absolute self-pointer computed against
+rx, written via rw, executed at rx — both passed on hardware).
+
 ## The core problem (validated by the M0 PoC)
 
 On this hardware `jitCreate` returns `JitType_CodeMemory`, which gives **two
