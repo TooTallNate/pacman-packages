@@ -41,5 +41,13 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        # Reuse Docker layers across CI runs. The expensive, rarely-changing
+        # layers (apt deps, the depot_tools + V8 source fetch in the v8-src
+        # stage) are restored from cache so only changed packages rebuild.
+        #
+        # Use a registry-backed cache (a dedicated `buildcache` tag in the same
+        # ghcr repo) rather than type=gha: the V8 source layer is far larger
+        # than the 10 GB GitHub Actions cache cap, which would otherwise thrash.
+        # mode=max caches intermediate multi-stage layers too, not just final.
         cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
         cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
