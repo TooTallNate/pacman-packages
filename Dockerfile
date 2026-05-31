@@ -140,13 +140,14 @@ ENV PATH="/opt/depot_tools:${PATH}"
 ENV DEPOT_TOOLS_UPDATE=0
 
 # Bootstrap depot_tools so that wrappers (gn, ninja) find python3_bin_reldir.txt.
-# The file is created during `fetch`/`gclient sync` in the v8-src stage but may
-# not survive the cross-stage COPY (e.g. due to layer caching or missing
-# auxiliary state).  Running the bootstrap script is cheap and idempotent.
-RUN vpython3 -vpython-spec /opt/depot_tools/.vpython3 -vpython-tool install 2>/dev/null; \
-    python3 /opt/depot_tools/bootstrap/bootstrap.py --bootstrap-name python3_bin_reldir.txt 2>/dev/null; \
-    test -f /opt/depot_tools/python3_bin_reldir.txt || \
-      echo "." > /opt/depot_tools/python3_bin_reldir.txt
+# The file is created during `fetch`/`gclient sync` in the v8-src stage but the
+# cipd-managed python directory it references may not survive the cross-stage
+# COPY. Force python3_bin_reldir.txt to "." and create the matching directory
+# structure with a symlink to the system python3 — this is cheaper and more
+# reliable than re-running the full cipd bootstrap.
+RUN echo "." > /opt/depot_tools/python3_bin_reldir.txt && \
+    mkdir -p /opt/depot_tools/python3/bin && \
+    ln -sf /usr/bin/python3 /opt/depot_tools/python3/bin/python3
 
 # Bring in the cached V8 source tree.
 COPY --from=v8-src --chown=user /v8/v8 /v8/v8
