@@ -132,8 +132,10 @@ RUN fetch --nohistory v8 && \
 # ---------------------------------------------------------------------------
 FROM portlibs AS v8
 
-# depot_tools provides gn + ninja for the build.
-RUN git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git /opt/depot_tools
+# depot_tools provides gn + ninja for the build.  Copy from the v8-src stage
+# where it was already bootstrapped (gclient/fetch creates python3_bin_reldir.txt
+# etc.); a fresh `git clone` would fail because depot_tools is uninitialised.
+COPY --from=v8-src /opt/depot_tools /opt/depot_tools
 ENV PATH="/opt/depot_tools:${PATH}"
 
 # Bring in the cached V8 source tree.
