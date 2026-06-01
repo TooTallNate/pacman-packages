@@ -1,0 +1,143 @@
+# Maintainer:  Dave Murphy <davem@devkitpro.org>
+# Contributor: Nathan Rajlich <n@n8.io>
+#
+# Google Skia 2D graphics library for Nintendo Switch / devkitA64.
+# Builds TWO static-lib variants, both validated rendering on real hardware:
+#   * libskia.a       - CPU raster backend (present via libnx software framebuffer)
+#   * libskia-gl.a    - Ganesh GPU backend (GL/GLES over devkitPro Mesa+nouveau,
+#                       present via EGL on the default NWindow)
+# plus libskia(-gl)_skcms.a (color management) and the public Skia headers.
+#
+# !!! NON-STANDARD SOURCE FETCH !!!
+# Like V8, Skia cannot be a single tarball + sha256: its build assembles DEPS via
+# `python3 tools/git-sync-deps` and uses Skia's bundled `gn`. So this PKGBUILD
+# expects a PRE-FETCHED, pinned Skia checkout pointed to by $SKIA_SRC:
+#
+#   git clone https://skia.googlesource.com/skia
+#   ( cd skia && git checkout chrome/m149 && python3 tools/git-sync-deps )
+#   export SKIA_SRC=/path/to/skia
+#
+# Host prerequisites on PATH: python3, ninja. The compiler is V8's-style bundled
+# Clang OR any clang capable of --target=aarch64-none-elf; set $SKIA_CLANG_DIR to
+# the llvm bin dir (defaults to a devkitPro/llvm location, see below).
+
+pkgname=switch-skia
+# Pinned to Skia's chrome/m149 milestone branch (latest stable at port time).
+pkgver=149
+pkgrel=1
+pkgdesc="Google Skia 2D graphics library (CPU raster + Ganesh GL) for Nintendo Switch"
+arch=('any')
+url='https://skia.org/'
+license=('BSD')
+options=(!strip libtool staticlibs)
+# CPU variant needs freetype+harfbuzz; GL variant additionally needs the Mesa/
+# nouveau GL stack. Declared as runtime deps so consumers get them transitively.
+depends=('switch-freetype' 'switch-harfbuzz' 'switch-mesa' 'switch-libdrm_nouveau')
+makedepends=('dkp-toolchain-vars')
+groups=('switch-portlibs')
+source=()
+sha256sums=()
+
+# Assemble the extra_cflags isystem chain + toolchain GN args. Skia's gcc_like
+# toolchain is driven by plain cc/cxx/ar; we point them at a clang that can
+# target aarch64-none-elf and pass the devkitA64/newlib/libnx isystem chain plus
+# the Horizon shim dir (for <sys/mman.h>) via extra_cflags. $1 = clang bin dir.
+_emit_toolchain_args() {
+    local llvm="$1"  # clang *bin* dir
+    local DKP=/opt/devkitpro TRIPLE=aarch64-none-elf
+    # clang resource include dir is <llvm-root>/lib/clang/<ver>/include; glob it.
+    local cres; cres=$(echo "$llvm"/../lib/clang/*/include)
+    [ -d "$cres" ] || { echo "ERROR: clang resource dir not found under $llvm/../lib/clang/*/include" >&2; return 1; }
+    local cxxinc="$DKP/devkitA64/$TRIPLE/include/c++/15.2.0"
+    local ft="$DKP/portlibs/switch/include/freetype2"
+    cat <<EOF
+cc = "$llvm/clang"
+cxx = "$llvm/clang++"
+ar = "$llvm/llvm-ar"
+extra_cflags = [
+  "--target=$TRIPLE", "-march=armv8-a+crc+crypto", "-mtune=cortex-a57",
+  "-femulated-tls", "-fPIC", "-D__SWITCH__", "-D_GNU_SOURCE",
+  "-DSK_BUILD_FOR_UNIX", "-DSK_FREETYPE_MINIMUM_RUNTIME_VERSION=0x020D0300",
+  "-nostdinc", "-nostdinc++",
+  "-isystem", "$startdir/horizon-src",
+  "-isystem", "$cres",
+  "-isystem", "$cxxinc",
+  "-isystem", "$cxxinc/$TRIPLE",
+  "-isystem", "$DKP/devkitA64/$TRIPLE/include",
+  "-isystem", "$DKP/libnx/include",
+  "-isystem", "$DKP/portlibs/switch/include",
+  "-isystem", "$ft",
+]
+extra_cflags_cc = [ "-std=c++20", "-fno-exceptions", "-fno-rtti" ]
+skia_system_freetype2_include_path = "$ft"
+EOF
+}
+
+build() {
+    [ -n "$SKIA_SRC" ] || { echo "ERROR: set SKIA_SRC to a pinned Skia checkout (chrome/m$pkgver, git-sync-deps run)"; return 1; }
+    [ -f "$SKIA_SRC/BUILD.gn" ] || { echo "ERROR: \$SKIA_SRC ($SKIA_SRC) is not a Skia checkout"; return 1; }
+    command -v python3 >/dev/null || { echo "ERROR: python3 required"; return 1; }
+
+    # Bundled gn; fetch if missing.
+    local gn="$SKIA_SRC/bin/gn"
+    [ -x "$gn" ] || ( cd "$SKIA_SRC" && python3 bin/fetch-gn )
+    # ninja: prefer one on PATH, else Skia's bundled.
+    local ninja
+    ninja=$(command -v ninja || echo "$SKIA_SRC/third_party/ninja/ninja")
+    [ -x "$ninja" ] || ( cd "$SKIA_SRC" && python3 bin/fetch-ninja )
+
+    # Clang dir: V8-style bundled clang or an override.
+    local clang="${SKIA_CLANG_DIR:-$SKIA_SRC/third_party/externals/clang/bin}"
+    [ -x "$clang/clang" ] || { echo "ERROR: set SKIA_CLANG_DIR to an llvm bin dir with a clang that targets aarch64-none-elf"; return 1; }
+
+    cd "$SKIA_SRC"
+    local common; common=$(cat "$startdir/gn-args-common.txt")
+    local tc; tc=$(_emit_toolchain_args "$clang")
+
+    # --- CPU raster variant ---
+    "$gn" gen out/horizon-cpu --args="$common
+$tc
+$(cat "$startdir/gn-args-cpu.txt")"
+    "$ninja" -C out/horizon-cpu libskia.a
+
+    # --- GPU (Ganesh GL) variant ---
+    "$gn" gen out/horizon-gl --args="$common
+$tc
+$(cat "$startdir/gn-args-gl.txt")"
+    "$ninja" -C out/horizon-gl libskia.a
+
+    # --- Horizon support shim object (pread) ---
+    "$clang/clang" --target=aarch64-none-elf -march=armv8-a+crc+crypto \
+        -mtune=cortex-a57 -femulated-tls -fPIC -O2 -D__SWITCH__ -D_GNU_SOURCE \
+        -nostdinc -isystem "$(echo "$clang"/../lib/clang/*/include)" \
+        -isystem /opt/devkitpro/devkitA64/aarch64-none-elf/include \
+        -isystem /opt/devkitpro/libnx/include \
+        -c "$startdir/horizon-src/skia-horizon-port.c" -o "$srcdir/skia-horizon-port.o"
+}
+
+package() {
+    source /opt/devkitpro/switchvars.sh
+    cd "$SKIA_SRC"
+    local L="$pkgdir/$PORTLIBS_PREFIX/lib"
+    local I="$pkgdir/$PORTLIBS_PREFIX/include/skia"
+    install -d "$L" "$I"
+
+    # CPU variant libs.
+    install -m644 out/horizon-cpu/libskia.a   "$L/libskia.a"
+    install -m644 out/horizon-cpu/libskcms.a  "$L/libskcms.a"
+    # GPU (Ganesh GL) variant libs (distinct names so both can be installed).
+    install -m644 out/horizon-gl/libskia.a    "$L/libskia-gl.a"
+    install -m644 out/horizon-gl/libskcms.a   "$L/libskcms-gl.a"
+    # Horizon support object (pread shim) — link alongside either variant.
+    install -m644 "$srcdir/skia-horizon-port.o" "$L/skia-horizon-port.o"
+
+    # Public headers: Skia is included as "include/core/SkCanvas.h" relative to
+    # the Skia source root, so install the whole include/ tree under
+    # $PORTLIBS_PREFIX/include/skia and let consumers add -I .../include/skia.
+    cp -r include/* "$I/"
+
+    # Example link recipes (CPU + GL).
+    install -d "$pkgdir/$PORTLIBS_PREFIX/share/switch-skia"
+    install -m644 "$startdir/example-cpu.sh" "$pkgdir/$PORTLIBS_PREFIX/share/switch-skia/"
+    install -m644 "$startdir/example-gl.sh"  "$pkgdir/$PORTLIBS_PREFIX/share/switch-skia/"
+}

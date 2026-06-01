@@ -1,0 +1,9 @@
+# CPU / raster-only Skia variant (no GPU). Appended after gn-args-common.txt.
+# Renders into a CPU buffer (SkSurfaces::WrapPixels), presented via the libnx
+# software framebuffer memcpy path. Lowest dependency footprint.
+skia_enable_ganesh = false
+skia_use_gl = false
+skia_use_vulkan = false
+skia_use_metal = false
+skia_use_dawn = false
+skia_use_egl = false

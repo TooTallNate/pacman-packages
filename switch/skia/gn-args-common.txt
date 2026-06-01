@@ -1,0 +1,45 @@
+# Common GN args for building Skia for Nintendo Switch (Horizon / devkitA64).
+# The PKGBUILD appends the toolchain (cc/cxx/ar), the extra_cflags isystem chain,
+# and the CPU- or GL-specific args. See gn-args-cpu.txt / gn-args-gl.txt.
+#
+# Rationale for the non-obvious choices (validated on hardware, Skia m149):
+#  - target_os="linux": Skia has no "horizon" concept; it uses target_os only to
+#    gate POSIX source-file lists (SkLog_stdio, SkOSFile_posix, etc.). "linux" is
+#    the correct POSIX bucket. The real target arch is set by the toolchain
+#    (clang --target=aarch64-none-elf) + the devkitA64 isystem chain, NOT by
+#    target_os.
+#  - SK_BUILD_FOR_UNIX (in extra_cflags): newlib defines none of the macros
+#    SkFeatures.h checks, so it would otherwise fall back to SK_BUILD_FOR_MAC and
+#    pull in <dispatch/dispatch.h>. Force the POSIX (sem_t) semaphore backend.
+#  - SK_FREETYPE_MINIMUM_RUNTIME_VERSION=0x020D0300: devkitPro ships FreeType
+#    2.13.3; setting this (without the DLOPEN flag bit) stops SkFontHost_FreeType
+#    from #include <dlfcn.h> for a runtime-symbol fallback newlib can't provide.
+#  - system FreeType: reuse devkitPro's libfreetype (the same one nx.js links).
+#  - no fontconfig / icu / skia's own harfbuzz / codecs / pdf / svg: embedders
+#    (e.g. nx.js) do shaping + image decode themselves; keep the lib lean.
+target_os = "linux"
+target_cpu = "arm64"
+is_official_build = true
+is_debug = false
+
+skia_use_freetype = true
+skia_use_system_freetype2 = true
+skia_use_fontconfig = false
+skia_use_harfbuzz = false
+skia_use_icu = false
+skia_enable_fontmgr_custom_empty = true
+skia_enable_fontmgr_custom_embedded = false
+skia_enable_fontmgr_custom_directory = false
+
+skia_use_libjpeg_turbo_decode = false
+skia_use_libjpeg_turbo_encode = false
+skia_use_libpng_decode = false
+skia_use_libpng_encode = false
+skia_use_libwebp_decode = false
+skia_use_libwebp_encode = false
+skia_use_zlib = false
+skia_use_expat = false
+skia_use_wuffs = false
+skia_enable_skottie = false
+skia_enable_svg = false
+skia_enable_pdf = false

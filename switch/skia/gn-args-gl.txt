@@ -1,0 +1,16 @@
+# GPU (Ganesh) Skia variant: GL/GLES backend over devkitPro Mesa + nouveau.
+# Appended after gn-args-common.txt. Validated rendering on real hardware
+# (Tegra X1 Maxwell GPU) via an EGL GLES context on the default NWindow.
+#
+# Embedders create an EGL GLES2/3 context (eglCreateWindowSurface on
+# nwindowGetDefault()), build a GrDirectContext via GrGLInterfaces::MakeEGL() ->
+# GrDirectContexts::MakeGL(), wrap the window FBO (FBO 0) with
+# GrBackendRenderTargets::MakeGL + SkSurfaces::WrapBackendRenderTarget, draw,
+# then flush/submit + eglSwapBuffers. Requires switch-mesa + switch-libdrm_nouveau.
+skia_enable_ganesh = true
+skia_use_gl = true
+skia_gl_standard = "gles"
+skia_use_egl = true
+skia_use_vulkan = false
+skia_use_metal = false
+skia_use_dawn = false
