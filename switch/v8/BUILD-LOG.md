@@ -556,3 +556,38 @@ Reviewed the code memory model for hardening. Findings:
   So data pages stay RW once committed; the attempt is documented in
   mman-horizon.cc SetPerm() so it isn't re-tried. No functional change
   (jitstress still 6/6 on hardware).
+
+## Milestone: WebAssembly works + memory-budget-aware code arena (hardware)
+
+WebAssembly needs nothing extra to be available: it's compiled in
+(`V8_ENABLE_WEBASSEMBLY`, default-on for arm64) and the `WebAssembly` global is
+installed on every context by the bootstrapper whenever V8 is NOT jitless
+(`expose_wasm = !v8_flags.jitless`). Our full-JIT build qualifies, so
+`WebAssembly`, `.Module`, `.Instance`, `.compile`, `.instantiate` are all present.
+
+But WASM compiles to native code via a SEPARATE code space from the JS JIT code
+range (jump tables for all builtins + function code). On Horizon both come out
+of the single libnx `jitCreate` CodeMemory arena. The first failure was
+`[FatalOOM] Allocate initial wasm code space`: an allocation trace showed V8's
+JS code-range reservation (`kNoAccessWillJitLater`, reserved in full up front)
+consumed the ENTIRE arena, leaving nothing for WASM.
+
+Fixes in `horizon-src/mman-horizon.cc` (`CodeArena::EnsureInit`):
+
+- **WASM headroom** — size the arena `kWasmHeadroomMb` (64 MiB) BEYOND V8's JS
+  code-range request, so WASM's separate reservation fits.
+- **Memory-budget awareness** — `jitCreate` maps the region twice (rx+rw), and
+  the JS heap needs room, so cap the arena at ~1/3 of the process's TOTAL memory
+  grant from `svcGetInfo(InfoType_TotalMemorySize)`. That grant already encodes
+  applet (small, ~hundreds of MB) vs application/full-memory (multi-GB) mode, so
+  no `appletGetAppletType()` branching is needed: the arena auto-scales —
+  conservative in applet mode, generous when full memory is available. Floor is
+  V8's 64 MiB minimum code range; a step-down retry handles a failed `jitCreate`.
+
+Hardware: a hand-built WASM `add(40,2)` module returns 42, and the JS
+deopt/OSR/GC battery still passes 6/6 with no regression. `main-wasm.cc` caps
+WASM's own reservations with `--wasm-max-initial-code-space-reservation` /
+`--wasm-max-code-space-size-mb` so a tiny module doesn't over-reserve.
+
+V8 on the Switch now runs JS (Ignition -> Sparkplug -> Maglev -> TurboFan) AND
+WebAssembly.

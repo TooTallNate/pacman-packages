@@ -72,14 +72,51 @@ static void DiagLog(const char* fmt, ...) {
 // ---------------------------------------------------------------------------
 class CodeArena {
  public:
+  // Extra MiB reserved in the code arena beyond V8's JS code-range reservation,
+  // to hold WebAssembly's separate code space (jump tables for all builtins +
+  // wasm function code). 64 covers a typical wasm workload; the address space is
+  // free until committed (jitCreate maps it, but unused pages aren't touched).
+  static constexpr size_t kWasmHeadroomMb = 64;
+
   bool EnsureInit(size_t need) {
     if (initialized_) return rx_base_ != 0;
     initialized_ = true;
-    // Size the region to cover V8's code range request (round to MB), with a
-    // floor. jitCreate maps the whole region twice, so don't over-reserve.
-    size_t sz = need < (size_t{64} << 20) ? (size_t{64} << 20) : need;
-    sz = (sz + 0xFFFFF) & ~size_t{0xFFFFF};
+
+    // Desired size: cover V8's code-range request (floored at the 64 MiB V8
+    // minimum) PLUS headroom for WebAssembly's separate code space. WASM
+    // reserves its own region (builtin jump tables + function code) from this
+    // same arena; without the headroom the JS reservation consumes everything
+    // and WASM OOMs ("Allocate initial wasm code space").
+    size_t want = (need < (size_t{64} << 20) ? (size_t{64} << 20) : need) +
+                  (size_t{kWasmHeadroomMb} << 20);
+
+    // Budget-awareness: jitCreate maps the region TWICE (rx + rw aliases), and
+    // the V8 JS heap (data arena) also needs room. Query the kernel for this
+    // process's TOTAL memory grant, which already encodes applet (small,
+    // ~hundreds of MB) vs application/full-memory (multi-GB) mode — so we don't
+    // need to special-case appletGetAppletType(). Cap the arena at ~1/3 of total
+    // (the jitCreate pages are demand-resident, so this is a generous ceiling
+    // that still leaves the majority for the heap). Floor is V8's 64 MiB minimum
+    // code range; if the chosen size can't be mapped, the retry loop steps down.
+    u64 total = 0;
+    if (R_SUCCEEDED(svcGetInfo(&total, InfoType_TotalMemorySize,
+                               CUR_PROCESS_HANDLE, 0)) &&
+        total != 0) {
+      size_t cap = static_cast<size_t>(total) / 3;
+      const size_t floor = size_t{64} << 20;
+      if (cap < floor) cap = floor;
+      if (want > cap) want = cap;
+    }
+
+    size_t sz = (want + 0xFFFFF) & ~size_t{0xFFFFF};
     Result rc = jitCreate(&jit_, sz);
+    // If the budget-derived size fails to map, step down toward the floor.
+    while (R_FAILED(rc) && sz > (size_t{64} << 20)) {
+      size_t half = sz / 2;
+      sz = (half < (size_t{64} << 20)) ? (size_t{64} << 20) : half;
+      DiagLog("mman: jitCreate retry at 0x%zx\n", sz);
+      rc = jitCreate(&jit_, sz);
+    }
     if (R_FAILED(rc)) {
       DiagLog("mman: jitCreate(0x%zx) FAILED rc=0x%x\n", sz, rc);
       return false;
