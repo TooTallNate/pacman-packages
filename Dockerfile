@@ -91,6 +91,16 @@ RUN dkp-makepkg
 USER root
 RUN dkp-pacman -U /packages/wasm3/*.pkg.tar.zst --noconfirm
 
+# switch-libuv: full PKGBUILD dir (patch + horizon.c source + shim headers +
+# support object source) rather than just the PKGBUILD, since the build consumes
+# those local files via $startdir.
+USER user
+WORKDIR /packages/libuv
+COPY --chown=user switch/libuv/ /packages/libuv/
+RUN dkp-makepkg
+USER root
+RUN dkp-pacman -U /packages/libuv/*.pkg.tar.zst --noconfirm
+
 # qjsc host tool (used by some builds). Build from the same quickjs release.
 ARG QUICKJS_VER=0.12.1
 WORKDIR /tmp/quickjs
@@ -225,6 +235,7 @@ COPY --from=portlibs   /packages/pixman/*.pkg.tar.zst   /packages/pixman/
 COPY --from=portlibs   /packages/cairo/*.pkg.tar.zst    /packages/cairo/
 COPY --from=portlibs   /packages/quickjs/*.pkg.tar.zst  /packages/quickjs/
 COPY --from=portlibs   /packages/wasm3/*.pkg.tar.zst    /packages/wasm3/
+COPY --from=portlibs   /packages/libuv/*.pkg.tar.zst    /packages/libuv/
 COPY --from=v8-build   /packages/v8/*.pkg.tar.zst       /packages/v8/
 COPY --from=skia-build /packages/skia/*.pkg.tar.zst     /packages/skia/
 COPY --from=portlibs   /usr/local/bin/qjsc              /usr/local/bin/qjsc
@@ -241,6 +252,7 @@ RUN dkp-pacman -U --noconfirm \
       /packages/cairo/*.pkg.tar.zst \
       /packages/quickjs/*.pkg.tar.zst \
       /packages/wasm3/*.pkg.tar.zst \
+      /packages/libuv/*.pkg.tar.zst \
       /packages/v8/*.pkg.tar.zst \
       /packages/skia/*.pkg.tar.zst
 

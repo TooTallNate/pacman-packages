@@ -1,0 +1,179 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 9b38b55..0591749 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -422,6 +422,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Haiku")
+ 	  src/unix/posix-poll.c)
+ endif()
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "Horizon" OR CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
++  # Nintendo Switch (devkitA64 + libnx). Generic POSIX-poll event backend; libnx
++  # provides BSD sockets + poll(). No fsevents / no proctitle; bsd-style ifaddrs.
++  list(APPEND uv_sources
++    src/unix/horizon.c
++    src/unix/posix-hrtime.c
++    src/unix/posix-poll.c
++    src/unix/bsd-ifaddrs.c
++    src/unix/no-proctitle.c
++    src/unix/no-fsevents.c)
++endif()
++
+ if(CMAKE_SYSTEM_NAME STREQUAL "QNX")
+   list(APPEND uv_sources
+     src/unix/posix-hrtime.c
+diff --git a/include/uv/unix.h b/include/uv/unix.h
+index c6ba419..8841170 100644
+--- a/include/uv/unix.h
++++ b/include/uv/unix.h
+@@ -29,6 +29,17 @@
+ 
+ #include <sys/socket.h>
+ #include <netinet/in.h>
++#if defined(__SWITCH__)
++/* libnx defines IPV6_JOIN_GROUP/LEAVE_GROUP and struct in6_addr but omits
++   struct ipv6_mreq, which udp.c needs. in6_addr is complete here. */
++# ifndef IPV6_MREQ_DEFINED
++#  define IPV6_MREQ_DEFINED
++struct ipv6_mreq {
++  struct in6_addr ipv6mr_multiaddr;
++  unsigned int    ipv6mr_interface;
++};
++# endif
++#endif
+ #include <netinet/tcp.h>
+ #include <arpa/inet.h>
+ #include <netdb.h>  /* MAXHOSTNAMELEN on Solaris */
+@@ -66,7 +77,8 @@
+       defined(__MSYS__)   || \
+       defined(__HAIKU__)  || \
+       defined(__QNX__)    || \
+-      defined(__GNU__)
++      defined(__GNU__)    || \
++      defined(__SWITCH__)  /* Nintendo Switch (Horizon): use the posix poll backend */
+ # include "uv/posix.h"
+ #endif
+ 
+diff --git a/src/unix/core.c b/src/unix/core.c
+index 73027cb..006b411 100644
+--- a/src/unix/core.c
++++ b/src/unix/core.c
+@@ -1106,7 +1106,7 @@ static int uv__getrusage(int who, uv_rusage_t* rusage) {
+   rusage->ru_stime.tv_sec = usage.ru_stime.tv_sec;
+   rusage->ru_stime.tv_usec = usage.ru_stime.tv_usec;
+ 
+-#if !defined(__MVS__) && !defined(__HAIKU__)
++#if !defined(__MVS__) && !defined(__HAIKU__) && !defined(__SWITCH__)
+   rusage->ru_maxrss = usage.ru_maxrss;
+   rusage->ru_ixrss = usage.ru_ixrss;
+   rusage->ru_idrss = usage.ru_idrss;
+diff --git a/src/unix/horizon.c b/src/unix/horizon.c
+new file mode 100644
+index 0000000..6be7dc6
+--- /dev/null
++++ b/src/unix/horizon.c
+@@ -0,0 +1,105 @@
++/* libuv platform support for Nintendo Switch (Horizon / libnx).
++ *
++ * Pairs with posix-poll.c (event loop) and bsd-ifaddrs.c. Provides the
++ * per-platform "util" functions libuv expects from src/unix/<os>.c:
++ * memory queries (via libnx svcGetInfo), uptime (system tick), CPU info,
++ * load average, and exepath. Capabilities Horizon lacks return sensible
++ * defaults / UV_ENOSYS rather than failing to link.
++ */
++
++#include "uv.h"
++#include "internal.h"
++
++#include <string.h>
++#include <switch.h>
++
++
++void uv_loadavg(double avg[3]) {
++  avg[0] = 0;
++  avg[1] = 0;
++  avg[2] = 0;
++}
++
++
++int uv_exepath(char* buffer, size_t* size) {
++  /* Homebrew NROs don't expose their own path through a POSIX API. */
++  if (buffer == NULL || size == NULL || *size == 0)
++    return UV_EINVAL;
++  return UV_ENOSYS;
++}
++
++
++/* Total physical memory available to this process's resource limit handle. */
++uint64_t uv_get_total_memory(void) {
++  u64 total = 0;
++  if (R_FAILED(svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0)))
++    return 0;
++  return total;
++}
++
++
++/* Used memory is what we can subtract to estimate "free". */
++uint64_t uv_get_free_memory(void) {
++  u64 total = 0;
++  u64 used = 0;
++  if (R_FAILED(svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0)))
++    return 0;
++  if (R_FAILED(svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0)))
++    return 0;
++  if (used > total)
++    return 0;
++  return total - used;
++}
++
++
++uint64_t uv_get_constrained_memory(void) {
++  /* The process memory budget is the meaningful constraint on Switch. */
++  return uv_get_total_memory();
++}
++
++
++uint64_t uv_get_available_memory(void) {
++  return uv_get_free_memory();
++}
++
++
++int uv_resident_set_memory(size_t* rss) {
++  u64 used = 0;
++  if (R_FAILED(svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0)))
++    return UV_ENOSYS;
++  *rss = (size_t)used;
++  return 0;
++}
++
++
++int uv_uptime(double* uptime) {
++  /* System tick runs at 19.2 MHz on all current hardware. */
++  *uptime = (double)armGetSystemTick() / 19200000.0;
++  return 0;
++}
++
++
++int uv_cpu_info(uv_cpu_info_t** cpu_infos, int* count) {
++  /* Switch exposes up to 4 application-usable Cortex-A57 cores. We report
++     them with model/speed best-effort; per-core CPU time isn't available. */
++  const int kCores = 4;
++  uv_cpu_info_t* infos;
++  int i;
++
++  if (cpu_infos == NULL || count == NULL)
++    return UV_EINVAL;
++
++  infos = uv__calloc(kCores, sizeof(*infos));
++  if (infos == NULL)
++    return UV_ENOMEM;
++
++  for (i = 0; i < kCores; i++) {
++    infos[i].model = uv__strdup("ARM Cortex-A57");
++    infos[i].speed = 1785;  /* MHz, docked boost clock */
++    /* cpu_times left zero: not exposed by Horizon. */
++  }
++
++  *cpu_infos = infos;
++  *count = kCores;
++  return 0;
++}

@@ -1,0 +1,123 @@
+# Maintainer:  Dave Murphy <davem@devkitpro.org>
+# Contributor: Nathan Rajlich <n@n8.io>
+#
+# libuv cross-platform asynchronous I/O library for Nintendo Switch / devkitA64.
+#
+# Ported to Horizon (libnx) using libuv's generic POSIX event backend
+# (src/unix/posix-poll.c) over libnx's BSD sockets + poll(). The port adds a
+# small platform file (src/unix/horizon.c) for memory/uptime/cpu queries via
+# libnx syscalls, a handful of newlib header shims (horizon-shim/), and a libc
+# support object (horizon-port.c) implementing/stubbing POSIX functions newlib
+# lacks (pread/pwrite/readv/writev for real; process/signal/tty/credential ops
+# as no-ops, since Horizon has no fork/exec/POSIX signals/ownership).
+#
+# Builds with the stock devkitPro GCC toolchain (no external clang required).
+#
+# Embedders MUST, in addition to -luv:
+#   * add the shim include dir:   -isystem $PORTLIBS_PREFIX/include/libuv-horizon-shim
+#   * force-include the prelude:  -include  $PORTLIBS_PREFIX/include/libuv-horizon-shim/nx-prelude.h
+#   * define -D__SWITCH__ -D_GNU_SOURCE -DSSIZE_MAX=0x7fffffffffffffffL
+#   * link the support object:    $PORTLIBS_PREFIX/lib/libuv-horizon-port.o
+# See $PORTLIBS_PREFIX/share/switch-libuv/example.sh for a full recipe.
+
+pkgname=switch-libuv
+pkgver=1.52.1
+pkgrel=1
+pkgdesc='libuv cross-platform asynchronous I/O (adapted for Nintendo Switch homebrew development)'
+arch=('any')
+url='https://libuv.org/'
+license=('MIT')
+options=(!strip libtool staticlibs)
+makedepends=('dkp-toolchain-vars' 'switch-cmake' 'switch-pkg-config')
+groups=('switch-portlibs')
+source=("libuv-v${pkgver}.tar.gz::https://dist.libuv.org/dist/v${pkgver}/libuv-v${pkgver}.tar.gz")
+sha256sums=('66d511b9e6e334c0e62279eb234fbfb2b3110b1479c09b95b44c7afca8cff9e7')
+
+# Local port files (patch, support source, shim headers) live alongside this
+# PKGBUILD and are referenced via $startdir, following the switch-v8/switch-skia
+# convention (keeps source=() to just the upstream tarball).
+
+# Extra compile flags every libuv translation unit (and embedders) need on
+# Horizon: define __SWITCH__ so the source/CMake Horizon branches activate, pull
+# in the shim headers ahead of newlib, force-include the prelude (POSIX feature
+# macros + missing decls), and widen ssize_t/SSIZE_MAX expectations.
+_extra_cflags() {
+    local shim="$startdir/horizon-shim"
+    echo "-D__SWITCH__ -D_GNU_SOURCE -DSSIZE_MAX=0x7fffffffffffffffL -isystem $shim -include $shim/nx-prelude.h"
+}
+
+prepare() {
+    cd "libuv-v${pkgver}"
+    patch -p1 < "$startdir/0001-horizon-switch-port.patch"
+}
+
+build() {
+    source /opt/devkitpro/switchvars.sh
+    cd "libuv-v${pkgver}"
+
+    # aarch64-none-elf-cmake (from switch-cmake) applies Switch.cmake automatically.
+    aarch64-none-elf-cmake -S . -B build -G "Unix Makefiles" \
+        -DCMAKE_INSTALL_PREFIX="$PORTLIBS_PREFIX" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_TESTING=OFF \
+        -DLIBUV_BUILD_SHARED=OFF \
+        -DCMAKE_C_FLAGS="$(_extra_cflags)"
+    cmake --build build
+
+    # libc support object: real pread/pwrite/readv/writev + Horizon stubs for
+    # the POSIX functions newlib declares but does not implement. This source is
+    # self-contained (defines the types newlib lacks itself), so it needs only
+    # the standard newlib/libnx include paths -- NOT the shim dir or prelude.
+    ${TOOL_PREFIX}gcc -march=armv8-a+crc+crypto -mtune=cortex-a57 -fPIE -fPIC -O2 \
+        -D__SWITCH__ -D_GNU_SOURCE -DSSIZE_MAX=0x7fffffffffffffffL \
+        -isystem /opt/devkitpro/libnx/include \
+        -c "$startdir/horizon-port.c" -o "$srcdir/libuv-horizon-port.o"
+}
+
+package() {
+    source /opt/devkitpro/switchvars.sh
+    cd "libuv-v${pkgver}"
+
+    local L="$pkgdir/$PORTLIBS_PREFIX/lib"
+    local I="$pkgdir/$PORTLIBS_PREFIX/include"
+    install -d "$L" "$I"
+
+    # Static library + public headers (uv.h and uv/).
+    install -m644 build/libuv.a "$L/libuv.a"
+    install -m644 include/uv.h  "$I/uv.h"
+    cp -r include/uv "$I/uv"
+
+    # Horizon support object (link alongside -luv).
+    install -m644 "$srcdir/libuv-horizon-port.o" "$L/libuv-horizon-port.o"
+
+    # Shim headers embedders must put ahead of newlib (and force-include the
+    # prelude). Installed under a clearly-named, self-contained tree.
+    local S="$I/libuv-horizon-shim"
+    install -d "$S/sys"
+    install -m644 "$startdir/horizon-shim/nx-prelude.h" "$S/nx-prelude.h"
+    install -m644 "$startdir/horizon-shim/dlfcn.h"      "$S/dlfcn.h"
+    install -m644 "$startdir/horizon-shim/ifaddrs.h"    "$S/ifaddrs.h"
+    install -m644 "$startdir/horizon-shim/sys/termios.h" "$S/sys/termios.h"
+    install -m644 "$startdir/horizon-shim/sys/uio.h"     "$S/sys/uio.h"
+    install -m644 "$startdir/horizon-shim/sys/un.h"      "$S/sys/un.h"
+    install -m644 "$startdir/horizon-shim/sys/utsname.h" "$S/sys/utsname.h"
+    install -m644 "$startdir/horizon-shim/sys/statfs.h"  "$S/sys/statfs.h"
+
+    # pkg-config file so consumers can discover flags.
+    install -d "$L/pkgconfig"
+    cat > "$L/pkgconfig/libuv.pc" <<EOF
+prefix=$PORTLIBS_PREFIX
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: libuv
+Version: ${pkgver}
+Description: libuv cross-platform asynchronous I/O (Nintendo Switch port)
+Libs: -L\${libdir} \${libdir}/libuv-horizon-port.o -luv
+Cflags: -I\${includedir} -isystem \${includedir}/libuv-horizon-shim -include \${includedir}/libuv-horizon-shim/nx-prelude.h -D__SWITCH__ -D_GNU_SOURCE -DSSIZE_MAX=0x7fffffffffffffffL
+EOF
+
+    # Example link recipe.
+    install -d "$pkgdir/$PORTLIBS_PREFIX/share/switch-libuv"
+    install -m644 "$startdir/example.sh" "$pkgdir/$PORTLIBS_PREFIX/share/switch-libuv/example.sh"
+}
