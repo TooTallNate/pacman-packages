@@ -15,31 +15,49 @@
 #    2.13.3; setting this (without the DLOPEN flag bit) stops SkFontHost_FreeType
 #    from #include <dlfcn.h> for a runtime-symbol fallback newlib can't provide.
 #  - system FreeType: reuse devkitPro's libfreetype (the same one nx.js links).
-#  - no fontconfig / icu / skia's own harfbuzz / codecs / pdf / svg: embedders
-#    (e.g. nx.js) do shaping + image decode themselves; keep the lib lean.
 target_os = "linux"
 target_cpu = "arm64"
 is_official_build = true
 is_debug = false
 
+# Fonts: devkitPro FreeType; no fontconfig.
 skia_use_freetype = true
 skia_use_system_freetype2 = true
 skia_use_fontconfig = false
-skia_use_harfbuzz = false
+
+# Text shaping built IN: SkShaper drives HarfBuzz (Skia's bundled copy, NOT a
+# system one) + SkUnicode via libgrapheme (lightweight; avoids ICU's large data
+# blob). This lets embedders shape text with one call instead of bridging
+# HarfBuzz themselves. (skia_use_system_harfbuzz=false -> build the bundled src.)
+skia_use_harfbuzz = true
+skia_use_system_harfbuzz = false
 skia_use_icu = false
+skia_use_libgrapheme = true
+skia_enable_skshaper = true
+skia_enable_skunicode = true
+
 skia_enable_fontmgr_custom_empty = true
 skia_enable_fontmgr_custom_embedded = false
 skia_enable_fontmgr_custom_directory = false
 
-skia_use_libjpeg_turbo_decode = false
-skia_use_libjpeg_turbo_encode = false
-skia_use_libpng_decode = false
-skia_use_libpng_encode = false
-skia_use_libwebp_decode = false
+# Image codecs built IN (SkCodec decode + SkEncoder encode), so embedders don't
+# need their own turbojpeg/libpng/libwebp wiring. These use the devkitPro system
+# libs (-ljpeg -lpng -lwebp -lwebpdemux -lz), linked by the consumer.
+#  - webp ENCODE is off: the bundled libwebp mux include path isn't wired in this
+#    config (decode works fine; webp encode is niche for canvas toBlob/toDataURL).
+#  - DNG/RAW off: camera-RAW decoding is irrelevant for a canvas runtime and its
+#    dng_sdk external doesn't recognize the Horizon platform.
+skia_use_libjpeg_turbo_decode = true
+skia_use_libjpeg_turbo_encode = true
+skia_use_libpng_decode = true
+skia_use_libpng_encode = true
+skia_use_libwebp_decode = true
 skia_use_libwebp_encode = false
-skia_use_zlib = false
+skia_use_wuffs = true   # GIF / animated decode
+skia_use_zlib = true
+skia_use_dng_sdk = false
+
 skia_use_expat = false
-skia_use_wuffs = false
 skia_enable_skottie = false
 skia_enable_svg = false
 skia_enable_pdf = false

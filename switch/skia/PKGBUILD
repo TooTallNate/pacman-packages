@@ -32,7 +32,11 @@ license=('BSD')
 options=(!strip libtool staticlibs)
 # CPU variant needs freetype+harfbuzz; GL variant additionally needs the Mesa/
 # nouveau GL stack. Declared as runtime deps so consumers get them transitively.
-depends=('switch-freetype' 'switch-harfbuzz' 'switch-mesa' 'switch-libdrm_nouveau')
+# freetype (fonts), the image codecs Skia's SkCodec links (jpeg/png/webp/zlib),
+# and the Mesa/nouveau GL stack for the GPU variant. (Skia bundles its own
+# HarfBuzz + libgrapheme, so switch-harfbuzz is not required at link time.)
+depends=('switch-freetype' 'switch-libjpeg-turbo' 'switch-libpng' 'switch-libwebp'
+         'switch-zlib' 'switch-bzip2' 'switch-mesa' 'switch-libdrm_nouveau')
 makedepends=('dkp-toolchain-vars')
 groups=('switch-portlibs')
 source=()
@@ -94,17 +98,20 @@ build() {
     local common; common=$(cat "$startdir/gn-args-common.txt")
     local tc; tc=$(_emit_toolchain_args "$clang")
 
+    # Libs to build per variant: core + color mgmt + text shaping/unicode.
+    local libs="libskia.a libskcms.a libskshaper.a libskunicode_core.a libskunicode_libgrapheme.a"
+
     # --- CPU raster variant ---
     "$gn" gen out/horizon-cpu --args="$common
 $tc
 $(cat "$startdir/gn-args-cpu.txt")"
-    "$ninja" -C out/horizon-cpu libskia.a
+    "$ninja" -C out/horizon-cpu $libs
 
     # --- GPU (Ganesh GL) variant ---
     "$gn" gen out/horizon-gl --args="$common
 $tc
 $(cat "$startdir/gn-args-gl.txt")"
-    "$ninja" -C out/horizon-gl libskia.a
+    "$ninja" -C out/horizon-gl $libs
 
     # --- Horizon support shim object (pread) ---
     "$clang/clang" --target=aarch64-none-elf -march=armv8-a+crc+crypto \
@@ -122,19 +129,29 @@ package() {
     local I="$pkgdir/$PORTLIBS_PREFIX/include/skia"
     install -d "$L" "$I"
 
-    # CPU variant libs.
-    install -m644 out/horizon-cpu/libskia.a   "$L/libskia.a"
-    install -m644 out/horizon-cpu/libskcms.a  "$L/libskcms.a"
+    # CPU variant libs (core + skcms + shaper + unicode).
+    install -m644 out/horizon-cpu/libskia.a                   "$L/libskia.a"
+    install -m644 out/horizon-cpu/libskcms.a                  "$L/libskcms.a"
+    install -m644 out/horizon-cpu/libskshaper.a               "$L/libskshaper.a"
+    install -m644 out/horizon-cpu/libskunicode_core.a         "$L/libskunicode_core.a"
+    install -m644 out/horizon-cpu/libskunicode_libgrapheme.a  "$L/libskunicode_libgrapheme.a"
     # GPU (Ganesh GL) variant libs (distinct names so both can be installed).
-    install -m644 out/horizon-gl/libskia.a    "$L/libskia-gl.a"
-    install -m644 out/horizon-gl/libskcms.a   "$L/libskcms-gl.a"
+    install -m644 out/horizon-gl/libskia.a                    "$L/libskia-gl.a"
+    install -m644 out/horizon-gl/libskcms.a                   "$L/libskcms-gl.a"
+    install -m644 out/horizon-gl/libskshaper.a                "$L/libskshaper-gl.a"
+    install -m644 out/horizon-gl/libskunicode_core.a          "$L/libskunicode_core-gl.a"
+    install -m644 out/horizon-gl/libskunicode_libgrapheme.a   "$L/libskunicode_libgrapheme-gl.a"
     # Horizon support object (pread shim) — link alongside either variant.
     install -m644 "$srcdir/skia-horizon-port.o" "$L/skia-horizon-port.o"
 
     # Public headers: Skia is included as "include/core/SkCanvas.h" relative to
-    # the Skia source root, so install the whole include/ tree under
-    # $PORTLIBS_PREFIX/include/skia and let consumers add -I .../include/skia.
+    # the Skia source root, so install the include/ tree (and the modules/ tree
+    # for SkShaper/SkUnicode, included as "modules/skshaper/include/SkShaper.h")
+    # under $PORTLIBS_PREFIX/include/skia; consumers add -I .../include/skia.
     cp -r include/* "$I/"
+    install -d "$I/modules"
+    cp -r modules/skshaper "$I/modules/"
+    cp -r modules/skunicode "$I/modules/"
 
     # Example link recipes (CPU + GL).
     install -d "$pkgdir/$PORTLIBS_PREFIX/share/switch-skia"

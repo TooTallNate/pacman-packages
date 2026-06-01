@@ -33,16 +33,21 @@ LIB="$PORTLIBS_PREFIX/lib"
   -I "$INC" -I "$DKP/libnx/include" -I "$PORTLIBS_PREFIX/include" \
   -c main.cc -o main.o
 
+# Link the GL variant (-gl suffixed archives) + the Mesa/EGL/GLES stack. Skia
+# bundles HarfBuzz + libgrapheme; SkCodec uses the devkitPro image libs.
 "$DKP/devkitA64/bin/$TRIPLE-g++" \
   -specs="$DKP/libnx/switch.specs" \
   -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE \
   main.o \
   -L"$LIB" \
-    "$LIB/skia-horizon-port.o" -lskia-gl -lskcms-gl \
+    "$LIB/skia-horizon-port.o" \
+    -Wl,--start-group \
+      -lskia-gl -lskcms-gl -lskshaper-gl -lskunicode_core-gl -lskunicode_libgrapheme-gl \
+    -Wl,--end-group \
     -lEGL -lGLESv2 -lglapi -ldrm_nouveau \
-    -lfreetype -lharfbuzz -lbz2 -lpng -lz \
+    -lfreetype -ljpeg -lpng -lwebp -lwebpdemux -lbz2 -lz \
   -L"$DKP/libnx/lib" -lnx -lm \
   -o app.elf
 
 elf2nro app.elf app.nro
-echo "OK: app.nro (Skia Ganesh GPU)"
+echo "OK: app.nro (Skia Ganesh GPU + codecs + shaping)"

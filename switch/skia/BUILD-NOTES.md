@@ -37,8 +37,33 @@ entire Horizon delta is GN args + tiny shims:
    Skia's POSIX file port. Installed as `skia-horizon-port.o` to link alongside.
 6. **link `-lharfbuzz`** — devkitPro's FreeType autofitter references HarfBuzz.
 
-Fonts reuse devkitPro's **FreeType** (`skia_use_system_freetype2`); shaping/ICU/
-codecs/PDF/SVG are disabled (embedders like nx.js do those themselves).
+Fonts reuse devkitPro's **FreeType** (`skia_use_system_freetype2`). PDF/SVG/
+Skottie/DNG-RAW are disabled (not needed for a canvas runtime).
+
+### Built-in image codecs + text shaping (so embedders don't reimplement them)
+
+The package enables Skia's own image and text subsystems, validated on hardware,
+so consumers (e.g. nx.js) can drop their manual turbojpeg/libpng/libwebp +
+HarfBuzz-bridge code:
+
+- **Image decode/encode** via `SkCodec` / `SkEncoder`: JPEG, PNG, WebP (decode),
+  GIF/animation (wuffs); PNG + JPEG encode. (WebP *encode* is off — the bundled
+  libwebp mux include isn't wired in this config; decode works.) These use the
+  devkitPro system codec libs at link time: `-ljpeg -lpng -lwebp -lwebpdemux -lz`.
+  Decode entry point: `SkImages::DeferredFromEncodedData(SkData)`.
+- **Text shaping** via `SkShaper` (drives **Skia's bundled HarfBuzz** —
+  `skia_use_system_harfbuzz=false` — plus `SkUnicode` over **libgrapheme**, the
+  lightweight alternative to ICU, so there is NO multi-MB ICU data blob to ship).
+  One call shapes UTF-8 into an `SkTextBlob`:
+  `SkUnicodes::Libgrapheme::Make()` -> `SkShapers::HB::ShaperDrivenWrapper(unicode,
+  fontMgr)` -> `shape()` into an `SkTextBlobBuilderRunHandler` -> `makeBlob()` ->
+  `canvas->drawTextBlob()`. Shaping ships as separate libs: `libskshaper.a`,
+  `libskunicode_core.a`, `libskunicode_libgrapheme.a` (and `-gl` variants).
+
+IMPORTANT (teardown): an embedder must explicitly release Skia objects + call
+`SkShaper::PurgeCaches()` / `SkGraphics::PurgeAllCaches()` before process exit;
+relying on C++ static-destructor order for the shaper/unicode/harfbuzz globals
+hangs/faults the exit on Horizon (observed, then fixed by explicit teardown).
 
 ## Building (non-standard source fetch)
 

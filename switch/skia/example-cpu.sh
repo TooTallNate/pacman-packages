@@ -28,15 +28,22 @@ LIB="$PORTLIBS_PREFIX/lib"
   -I "$INC" -I "$DKP/libnx/include" \
   -c main.cc -o main.o
 
+# Link the CPU variant. Skia bundles HarfBuzz + libgrapheme (in libskshaper /
+# libskunicode_*), so you do NOT link a system harfbuzz. SkCodec uses the
+# devkitPro image libs (-ljpeg -lpng -lwebp -lwebpdemux -lz). Wrap the Skia
+# archives in --start-group (circular refs).
 "$DKP/devkitA64/bin/$TRIPLE-g++" \
   -specs="$DKP/libnx/switch.specs" \
   -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE \
   main.o \
   -L"$LIB" \
-    "$LIB/skia-horizon-port.o" -lskia -lskcms \
-    -lfreetype -lharfbuzz -lbz2 -lpng -lz \
+    "$LIB/skia-horizon-port.o" \
+    -Wl,--start-group \
+      -lskia -lskcms -lskshaper -lskunicode_core -lskunicode_libgrapheme \
+    -Wl,--end-group \
+    -lfreetype -ljpeg -lpng -lwebp -lwebpdemux -lbz2 -lz \
   -L"$DKP/libnx/lib" -lnx -lm \
   -o app.elf
 
 elf2nro app.elf app.nro
-echo "OK: app.nro (Skia CPU raster)"
+echo "OK: app.nro (Skia CPU raster + codecs + shaping)"

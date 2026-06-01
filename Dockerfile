@@ -192,7 +192,8 @@ FROM base AS skia-build
 # Runtime/make deps of switch-skia, from the devkitPro prebuilt repo.
 USER root
 RUN dkp-pacman -S --noconfirm \
-      switch-freetype switch-harfbuzz switch-bzip2 switch-libpng switch-zlib \
+      switch-freetype switch-bzip2 switch-libpng switch-zlib \
+      switch-libjpeg-turbo switch-libwebp \
       switch-mesa switch-libdrm_nouveau switch-glad
 
 # Reuse V8's bundled Clang (targets aarch64-none-elf via --target). This couples
@@ -231,7 +232,8 @@ COPY --from=portlibs   /usr/local/bin/qjsc              /usr/local/bin/qjsc
 # switch-skia depends on the GL stack + freetype/harfbuzz (prebuilt repo pkgs);
 # install those first so the local switch-skia package's deps resolve.
 RUN dkp-pacman -S --noconfirm \
-      switch-freetype switch-harfbuzz switch-mesa switch-libdrm_nouveau
+      switch-freetype switch-libjpeg-turbo switch-libpng switch-libwebp \
+      switch-zlib switch-bzip2 switch-mesa switch-libdrm_nouveau
 
 # Install all locally-built packages (order matters: cairo needs pixman).
 RUN dkp-pacman -U --noconfirm \
