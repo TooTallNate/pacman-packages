@@ -508,3 +508,30 @@ gives DETERMINISTIC, verifiable tier control instead of heuristic warm-up.
 
 Build the NRO with `hello-v8/build-bench.sh` against `main-natives.cc` (drop
 `-lqjs`). Useful as the foundation for targeted deopt/OSR stress tests.
+
+## Milestone: deopt / OSR / GC stress (hardware)
+
+`hello-v8/source/main-jitstress.cc` drives the hardest JIT-lifecycle paths
+deterministically via the `%`-intrinsics (under `--allow-natives-syntax
+--no-concurrent-recompilation`), reading back `%GetOptimizationStatus` to assert
+state transitions. On hardware: **6/6 PASS**, no crash/fatal:
+
+- `explicit-deopt` — `%DeoptimizeFunction` tears down a TurboFan'd function
+  (confirmed `kTurboFanned` set, then cleared) and it still returns the right
+  value — exercises freeing JIT code in the libnx CodeMemory arena.
+- `osr-loop` — `%OptimizeOsr()` inside a hot loop swaps the LIVE running frame
+  for optimized code mid-iteration (on-stack replacement). Exact result.
+- `gc-under-opt` — a forced full `%CollectGarbage` partway through an optimized
+  array-allocating loop; optimized code survives object moves + code-pointer
+  fixups and keeps the right checksum.
+- `poly-deopt` — int-optimized function deopts and recovers on float/string args.
+- `gc-of-jit-code` — deopt + `%ClearFunctionFeedback` + GC actually reclaims the
+  optimized `Code` object from the arena; the function recompiles lazily and
+  stays correct.
+- `newspace-full` — `%SimulateNewspaceFull` forces a young-gen scavenge under
+  optimized code.
+
+This validates the full optimizing-tier lifecycle (compile -> OSR -> deopt ->
+GC-reclaim -> recompile) against the Horizon W^X code-write redirect (patch
+0003) and the dual rw/rx CodeMemory arena. Build the NRO with
+`hello-v8/build-bench.sh` against `main-jitstress.cc` (drop `-lqjs`).
