@@ -82,10 +82,14 @@ horizon_llvm_dir = "$llvm"
 horizon_clang_resource = "$res"
 $host_extra
 
-# Full JIT: interpreter + Sparkplug (baseline) + TurboFan (optimizing).
+# Full JIT: interpreter + Sparkplug (baseline) + Maglev (mid-tier) + TurboFan
+# (top-tier optimizing). Maglev is default-on for arm64 upstream and validated
+# 9/9 on hardware (its fjcvtzs uses are JSCVT-guarded with Fcvtzs fallbacks, and
+# it shares TurboFan's WritableJitAllocation codegen path that patch 0003
+# redirects for W^X).
 v8_enable_sparkplug = true
 v8_enable_turbofan = true
-v8_enable_maglev = false
+v8_enable_maglev = true
 
 v8_monolithic = true
 v8_static_library = true

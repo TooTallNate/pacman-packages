@@ -460,3 +460,28 @@ find out/switch-jit/obj/third_party/abseil-cpp -name '*.o' \
 $A64/aarch64-none-elf-ranlib /tmp/libabsl_jit.a
 # 3. ./hello-v8/build-bench.sh   (links monolith + libabsl_jit.a + -lqjs + -lnx)
 ```
+
+## Milestone: Maglev (mid-tier JIT) enabled + validated (hardware)
+
+`v8_enable_maglev = true`. V8 now runs all four tiers on the Switch: Ignition
+(interpreter) -> Sparkplug (baseline) -> Maglev (mid-tier optimizing) ->
+TurboFan (top-tier). Maglev is default-on for arm64 upstream and needed **no
+source changes**:
+
+- Its only `fjcvtzs` uses (`maglev-assembler-arm64.cc` Truncate/TryTruncate
+  DoubleToInt32) are guarded by `CpuFeatures::IsSupported(JSCVT)` with complete
+  `Fcvtzs`-based fallbacks; the A57 lacks JSCVT so the fallback runs. Re-verified
+  the embedded snapshot blob has **0** `fjcvtzs` with Maglev on.
+- It emits code through the same `MacroAssembler` / `WritableJitAllocation` path
+  as TurboFan, so the Horizon W^X write-redirect (patch 0003) covers it for free
+  — no new redirect sites.
+- Requires TurboFan (`assert(v8_enable_turbofan || !v8_enable_maglev)`), which we
+  already enable. No pointer-compression/sandbox dependency.
+
+`hello-v8/source/main-maglev.cc` forces synchronous tier-up with
+`--maglev --stress-maglev --no-concurrent-recompilation` (tiers after 4 calls,
+no background worker — matches our single-threaded model). It warms each of 9
+workloads 40x then checks the post-optimization result. On hardware: **9/9 PASS**,
+0 failures, no crash/fatal — including a `>>>0` uint32 case that exercises the
+JSCVT-less `TruncateDoubleToInt32` fallback and a polymorphic add. Build the
+NRO with `hello-v8/build-bench.sh` against `main-maglev.cc` (drop `-lqjs`).
