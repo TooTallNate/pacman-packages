@@ -7,14 +7,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <switch.h>
-#include "include/libplatform/libplatform.h"
-#include "include/v8-context.h"
-#include "include/v8-exception.h"
-#include "include/v8-initialization.h"
-#include "include/v8-isolate.h"
-#include "include/v8-local-handle.h"
-#include "include/v8-primitive.h"
-#include "include/v8-script.h"
+#include <libplatform/libplatform.h>
+#include <v8-context.h>
+#include <v8-exception.h>
+#include <v8-initialization.h>
+#include <v8-isolate.h>
+#include <v8-local-handle.h>
+#include <v8-primitive.h>
+#include <v8-script.h>
 
 static Mutex g_m;
 static void lp(const char* s){ mutexLock(&g_m); fputs(s,stdout); consoleUpdate(NULL);

@@ -10,16 +10,16 @@
 
 #include <switch.h>
 
-#include "include/v8-message.h"
+#include <v8-message.h>
 
-#include "include/libplatform/libplatform.h"
-#include "include/v8-context.h"
-#include "include/v8-exception.h"
-#include "include/v8-initialization.h"
-#include "include/v8-isolate.h"
-#include "include/v8-local-handle.h"
-#include "include/v8-primitive.h"
-#include "include/v8-script.h"
+#include <libplatform/libplatform.h>
+#include <v8-context.h>
+#include <v8-exception.h>
+#include <v8-initialization.h>
+#include <v8-isolate.h>
+#include <v8-local-handle.h>
+#include <v8-primitive.h>
+#include <v8-script.h>
 
 static int g_ok = 0;
 static int g_fail = 0;
