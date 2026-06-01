@@ -128,9 +128,12 @@ RUN fetch --nohistory v8 && \
     find /v8 -name '.git' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# v8: build switch-v8 on top of the portlibs image using the cached source.
+# v8-build: build the switch-v8 package on top of portlibs using the cached
+# source. This stage is HUGE (V8 source ~tens of GB, depot_tools, build
+# artifacts) and is NOT the final image — the `runtime` stage below copies only
+# the resulting .pkg.tar.zst out of it.
 # ---------------------------------------------------------------------------
-FROM portlibs AS v8
+FROM portlibs AS v8-build
 
 # depot_tools provides gn + ninja for the build.  Copy from the v8-src stage
 # where it was already bootstrapped (gclient/fetch creates python3_bin_reldir.txt
@@ -160,7 +163,31 @@ WORKDIR /packages/v8
 COPY --chown=user switch/v8/ /packages/v8/
 ENV V8_SRC=/v8/v8
 RUN dkp-makepkg
-USER root
-RUN dkp-pacman -U /packages/v8/*.pkg.tar.zst --noconfirm
+
+# ---------------------------------------------------------------------------
+# runtime: the FINAL, slim image. Starts from `base` (toolchain + helpers, no
+# source / no depot_tools / no build artifacts) and installs ONLY the built
+# package files. The multi-GB V8 source tree and intermediate build outputs in
+# v8-build are discarded — they never enter the final image.
+# ---------------------------------------------------------------------------
+FROM base AS runtime
+
+# Collect every package's built .pkg.tar.zst into /packages (kept in the image
+# so they can be published / inspected), plus the qjsc host tool.
+COPY --from=portlibs /packages/pixman/*.pkg.tar.zst   /packages/pixman/
+COPY --from=portlibs /packages/cairo/*.pkg.tar.zst    /packages/cairo/
+COPY --from=portlibs /packages/quickjs/*.pkg.tar.zst  /packages/quickjs/
+COPY --from=portlibs /packages/wasm3/*.pkg.tar.zst    /packages/wasm3/
+COPY --from=v8-build /packages/v8/*.pkg.tar.zst       /packages/v8/
+COPY --from=portlibs /usr/local/bin/qjsc              /usr/local/bin/qjsc
+
+# Install all packages (order matters: cairo depends on pixman). pacman pulls in
+# the already-present toolchain deps from `base`.
+RUN dkp-pacman -U --noconfirm \
+      /packages/pixman/*.pkg.tar.zst \
+      /packages/cairo/*.pkg.tar.zst \
+      /packages/quickjs/*.pkg.tar.zst \
+      /packages/wasm3/*.pkg.tar.zst \
+      /packages/v8/*.pkg.tar.zst
 
 WORKDIR /
