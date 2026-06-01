@@ -22,6 +22,7 @@
 #include "include/v8-script.h"
 
 static int g_ok = 0;
+static int g_fail = 0;
 
 // consoleUpdate()/printf() are NOT thread-safe; V8 runs on its own thread (and
 // may spawn more), while the main thread also touches the console. Guard all
@@ -48,10 +49,22 @@ static void locked_print(const char* msg) {
 static void RunV8() {
   // Force V8 to avoid background threads (jitless bring-up on Horizon: keep
   // everything on the main thread to sidestep worker-thread sync issues).
+  // Natives-syntax tier test. --allow-natives-syntax exposes the %-prefixed
+  // runtime helpers (%PrepareFunctionForOptimization,
+  // %OptimizeFunctionOnNextCall, %OptimizeMaglevOnNextCall,
+  // %GetOptimizationStatus) so we can DETERMINISTICALLY force a function into a
+  // specific tier and then read back which tier it actually compiled to (rather
+  // than inferring it from heuristic warm-up). --no-concurrent-recompilation
+  // makes the optimize calls compile synchronously on this thread.
+  // NOTE: flag order matters. SetFlagsFromString stops applying flags AFTER the
+  // first unrecognized one (it reports "remaining arguments were ignored"). An
+  // earlier version had a bogus "--no-use-idle-notification" here, which
+  // silently dropped every flag after it — including --allow-natives-syntax,
+  // which is why % syntax appeared "rejected". Keep this list to real flags.
   const char* flags =
       "--single-threaded --single-threaded-gc --no-concurrent-recompilation "
       "--predictable "
-      "--sparkplug --always-sparkplug";
+      "--sparkplug --maglev --turbofan --allow-natives-syntax";
   v8::V8::SetFlagsFromString(flags);
   CK("flags set");
 
@@ -104,69 +117,106 @@ static void RunV8() {
     CK("Context::New done");
     v8::Context::Scope context_scope(context);
 
-    v8::TryCatch try_catch(isolate);
+    CK("running natives battery");
 
-    v8::Local<v8::String> source =
-        v8::String::NewFromUtf8Literal(isolate,
-            "function add(a,b){return a+b;}\n"
-            "let s=0; for (let i=0;i<100000;i++) s=add(s,i);\n"
-            "s;");
-    CK("compiling");
-    v8::Local<v8::Script> script;
-    if (!v8::Script::Compile(context, source).ToLocal(&script)) {
-      char buf[320];
-      snprintf(buf, sizeof(buf),
-               "COMPILE FAILED: hasCaught=%d hasTerminated=%d canContinue=%d "
-               "exceptionEmpty=%d\n",
-               try_catch.HasCaught(), try_catch.HasTerminated(),
-               try_catch.CanContinue(), try_catch.Exception().IsEmpty());
-      locked_print(buf);
-      // Try the structured compile Message first (has the error text/line even
-      // when stringifying the exception object fails).
-      v8::Local<v8::Message> msg = try_catch.Message();
-      if (!msg.IsEmpty()) {
-        v8::String::Utf8Value m(isolate, msg->Get());
-        char b2[320];
-        snprintf(b2, sizeof(b2), "  message: %s\n", *m ? *m : "(null)");
-        locked_print(b2);
-      } else {
-        locked_print("  message: (empty)\n");
-      }
-      // Inspect the exception object's type without calling JS toString.
-      v8::Local<v8::Value> exc = try_catch.Exception();
-      if (!exc.IsEmpty()) {
-        char b3[160];
-        snprintf(b3, sizeof(b3),
-                 "  exc types: undefined=%d null=%d string=%d object=%d "
-                 "native_error=%d\n",
-                 exc->IsUndefined(), exc->IsNull(), exc->IsString(),
-                 exc->IsObject(), exc->IsNativeError());
-        locked_print(b3);
-      }
-      if (isolate->IsExecutionTerminating()) {
-        locked_print("  isolate execution is TERMINATING\n");
-      }
-      return;
-    }
-    CK("running");
-    v8::Local<v8::Value> result;
-    if (!script->Run(context).ToLocal(&result)) {
-      v8::String::Utf8Value err(isolate, try_catch.Exception());
+    // Run `src`, stringify the result, compare to `expected`. Logs PASS/FAIL.
+    auto run_case = [&](const char* name, const char* src,
+                        const char* expected) {
+      v8::TryCatch tc(isolate);
+      v8::Local<v8::String> s =
+          v8::String::NewFromUtf8(isolate, src).ToLocalChecked();
+      v8::Local<v8::Script> sc;
       char buf[256];
-      snprintf(buf, sizeof(buf), "RUN FAILED: %s\n",
-               *err ? *err : "(no exception message)");
+      if (!v8::Script::Compile(context, s).ToLocal(&sc)) {
+        snprintf(buf, sizeof(buf), "FAIL %s: compile error\n", name);
+        locked_print(buf);
+        g_fail++;
+        return;
+      }
+      v8::Local<v8::Value> r;
+      if (!sc->Run(context).ToLocal(&r)) {
+        v8::String::Utf8Value e(isolate, tc.Exception());
+        snprintf(buf, sizeof(buf), "FAIL %s: threw %s\n", name,
+                 *e ? *e : "(?)");
+        locked_print(buf);
+        g_fail++;
+        return;
+      }
+      v8::String::Utf8Value got(isolate, r);
+      const char* g = *got ? *got : "(null)";
+      if (strcmp(g, expected) == 0) {
+        snprintf(buf, sizeof(buf), "PASS %s = %s\n", name, g);
+      } else {
+        snprintf(buf, sizeof(buf), "FAIL %s: got %s expected %s\n", name, g,
+                 expected);
+        g_fail++;
+      }
       locked_print(buf);
-      return;
-    }
+    };
 
-    v8::String::Utf8Value utf8(isolate, result);
+    // 1) Sanity: does --allow-natives-syntax actually enable the %-runtime?
+    //    A bare '%' intrinsic call must PARSE and RUN. If the flag/runtime were
+    //    unavailable, the parser would reject '%' and this would be a compile
+    //    error (FAIL). %GetOptimizationStatus on a fresh function returns a
+    //    non-zero status int (kIsFunction bit set), so just check it's numeric.
+    run_case("natives-enabled",
+             "function z(){return 1;}"
+             "(typeof %GetOptimizationStatus(z)==='number')?'yes':'no';", "yes");
+
+    // OptimizationStatus bit decoder (from runtime.h):
+    //   kOptimized=1<<3(8) kMaglevved=1<<4(16) kTurboFanned=1<<5(32)
+    //   kInterpreted=1<<6(64) kBaseline=1<<14(16384)
+    // We force a tier, then read GetOptimizationStatus and assert the tier bit.
+
+    // 2) Force TurboFan and confirm kTurboFanned (1<<5) is set.
+    run_case("force-turbofan",
+             "function tf(x){return (x*3+1)|0;}"
+             "%PrepareFunctionForOptimization(tf);"
+             "tf(1);tf(2);"
+             "%OptimizeFunctionOnNextCall(tf);"
+             "tf(3);"  // triggers the synchronous TurboFan compile
+             "((%GetOptimizationStatus(tf)&32)!==0)?'turbofan':'no';",
+             "turbofan");
+
+    // 3) Force Maglev and confirm kMaglevved (1<<4) is set.
+    run_case("force-maglev",
+             "function mg(x){return (x*7+2)|0;}"
+             "%PrepareFunctionForOptimization(mg);"
+             "mg(1);mg(2);"
+             "%OptimizeMaglevOnNextCall(mg);"
+             "mg(3);"
+             "((%GetOptimizationStatus(mg)&16)!==0)?'maglev':'no';",
+             "maglev");
+
+    // 4) Correctness across forced TurboFan tier-up: result must match the
+    //    interpreter (a heavier function that exercises the float->int path).
+    run_case("turbofan-correct",
+             "function w(x){let s=0;for(let i=0;i<1000;i++)s+=Math.sqrt(i*x)|0;"
+             "return s|0;}"
+             "%PrepareFunctionForOptimization(w);"
+             "let a=w(2);"
+             "%OptimizeFunctionOnNextCall(w);"
+             "let b=w(2);"
+             "(a===b)?(''+b):'MISMATCH:'+a+'/'+b;",
+             "29304");
+
+    // 5) Optimized function still deopts/recovers correctly on type change.
+    run_case("deopt-recover",
+             "function d(x){return x+1;}"
+             "%PrepareFunctionForOptimization(d);"
+             "d(1);d(2);"
+             "%OptimizeFunctionOnNextCall(d);"
+             "d(3);"                       // optimized for ints
+             "var r=''+d(10)+','+d('s');"  // 'string' arg forces deopt
+             "r;",
+             "11,s1");
+
     {
-      char buf[128];
-      snprintf(buf, sizeof(buf), "V8 JIT result (sum 0..99999) = %s\n",
-               *utf8 ? *utf8 : "(null)");
+      char buf[96];
+      snprintf(buf, sizeof(buf), "\nnatives battery: %d failures\n", g_fail);
       locked_print(buf);
     }
-    g_ok = 1;
+    g_ok = (g_fail == 0) ? 1 : 0;
   }
 
   isolate->Dispose();
@@ -190,7 +240,7 @@ int main(int argc, char* argv[]) {
   PadState pad;
   padInitializeDefault(&pad);
 
-  locked_print("Initializing V8 (JIT: sparkplug+turbofan) ...\n");
+  locked_print("Initializing V8 (natives-syntax tier verification) ...\n");
 
   // Run V8 on a dedicated libnx thread with a LARGE stack. The hbloader main
   // thread has a small (~1 MB) stack and is not a libnx Thread, so
@@ -210,8 +260,8 @@ int main(int argc, char* argv[]) {
     locked_print(buf);
   }
 
-  locked_print(g_ok ? "\nSUCCESS: V8 ran on Switch!\nPress + to exit.\n"
-                    : "\nFAILED: V8 did not produce a result\nPress + to exit.\n");
+  locked_print(g_ok ? "\nNATIVES: all tier-verification tests passed!\nPress + to exit.\n"
+                    : "\nNATIVES: some tier-verification tests FAILED\nPress + to exit.\n");
 
   while (appletMainLoop()) {
     padUpdate(&pad);

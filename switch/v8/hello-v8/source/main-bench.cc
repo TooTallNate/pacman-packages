@@ -97,7 +97,7 @@ static void RunBenchmarks() {
   // ---- V8 setup (full JIT, Sparkplug forced) ----
   v8::V8::SetFlagsFromString(
       "--single-threaded --single-threaded-gc --no-concurrent-recompilation "
-      "--predictable --no-use-idle-notification --sparkplug --always-sparkplug");
+      "--predictable --sparkplug --always-sparkplug");
   std::unique_ptr<v8::Platform> platform =
       v8::platform::NewSingleThreadedDefaultPlatform();
   v8::V8::InitializePlatform(platform.get());

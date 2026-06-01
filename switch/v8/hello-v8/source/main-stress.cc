@@ -51,7 +51,7 @@ static void RunV8() {
   // everything on the main thread to sidestep worker-thread sync issues).
   const char* flags =
       "--single-threaded --single-threaded-gc --no-concurrent-recompilation "
-      "--predictable --no-use-idle-notification "
+      "--predictable "
       "--sparkplug --always-sparkplug";
   v8::V8::SetFlagsFromString(flags);
   CK("flags set");

@@ -485,3 +485,26 @@ workloads 40x then checks the post-optimization result. On hardware: **9/9 PASS*
 0 failures, no crash/fatal — including a `>>>0` uint32 case that exercises the
 JSCVT-less `TruncateDoubleToInt32` fallback and a polymorphic add. Build the
 NRO with `hello-v8/build-bench.sh` against `main-maglev.cc` (drop `-lqjs`).
+
+## Milestone: natives-syntax tier verification (hardware)
+
+`--allow-natives-syntax` works in the JIT build (it actually defaults ON here,
+so no flag wrangling is needed) — this exposes the `%`-prefixed test runtime
+(`runtime-test.cc`, which is compiled into the monolith unconditionally). That
+gives DETERMINISTIC, verifiable tier control instead of heuristic warm-up.
+
+`hello-v8/source/main-natives.cc` uses `--allow-natives-syntax` with
+`--no-concurrent-recompilation` (synchronous optimize) and asserts the tier via
+`%GetOptimizationStatus` bits (from `src/runtime/runtime.h`:
+`kMaglevved=1<<4`, `kTurboFanned=1<<5`). On hardware: **5/5 PASS**:
+
+- `natives-enabled` — `%`-syntax parses & `%GetOptimizationStatus` runs.
+- `force-turbofan` — `%PrepareFunctionForOptimization` + `%OptimizeFunctionOnNextCall`
+  → `kTurboFanned` bit set (function is genuinely TurboFan-compiled).
+- `force-maglev` — `%OptimizeMaglevOnNextCall` → `kMaglevved` bit set.
+- `turbofan-correct` — result identical before/after forced optimization (29304).
+- `deopt-recover` — an int-optimized function deopts and recovers correctly when
+  handed a string argument (`11,s1`).
+
+Build the NRO with `hello-v8/build-bench.sh` against `main-natives.cc` (drop
+`-lqjs`). Useful as the foundation for targeted deopt/OSR stress tests.

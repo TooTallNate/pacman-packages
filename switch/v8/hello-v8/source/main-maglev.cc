@@ -57,7 +57,7 @@ static void RunV8() {
   // then verify the result is still correct after optimization.
   const char* flags =
       "--single-threaded --single-threaded-gc --no-concurrent-recompilation "
-      "--predictable --no-use-idle-notification "
+      "--predictable "
       "--sparkplug --maglev --stress-maglev";
   v8::V8::SetFlagsFromString(flags);
   CK("flags set");
