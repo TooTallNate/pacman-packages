@@ -165,6 +165,52 @@ ENV V8_SRC=/v8/v8
 RUN dkp-makepkg
 
 # ---------------------------------------------------------------------------
+# skia-src: pinned Skia checkout + git-sync-deps + bundled gn/ninja. Like
+# v8-src: expensive, rarely changes, isolated for cache reuse. Bump SKIA_VER.
+# ---------------------------------------------------------------------------
+FROM base AS skia-src
+
+ARG SKIA_VER=149
+WORKDIR /skia
+RUN git clone https://skia.googlesource.com/skia.git src && \
+    cd src && \
+    git checkout "chrome/m${SKIA_VER}" && \
+    python3 tools/git-sync-deps && \
+    python3 bin/fetch-gn && \
+    python3 bin/fetch-ninja && \
+    # strip VCS metadata to shrink the layer (sources are checked out).
+    find /skia -name '.git' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# skia-build: build the switch-skia package (CPU raster + Ganesh GL variants).
+# Intermediate only — runtime copies just the resulting .pkg.tar.zst. Needs the
+# GL stack (mesa/nouveau) + freetype/harfbuzz installed, and a clang that can
+# target aarch64-none-elf (reuse V8's bundled clang from the v8-src stage).
+# ---------------------------------------------------------------------------
+FROM base AS skia-build
+
+# Runtime/make deps of switch-skia, from the devkitPro prebuilt repo.
+USER root
+RUN dkp-pacman -S --noconfirm \
+      switch-freetype switch-harfbuzz switch-bzip2 switch-libpng switch-zlib \
+      switch-mesa switch-libdrm_nouveau switch-glad
+
+# Reuse V8's bundled Clang (targets aarch64-none-elf via --target). This couples
+# skia-build to v8-src, but CI builds both anyway and the layer is cached; it
+# avoids fetching a second multi-hundred-MB clang just for Skia.
+COPY --from=v8-src /v8/v8/third_party/llvm-build/Release+Asserts /opt/skia-llvm
+ENV SKIA_CLANG_DIR=/opt/skia-llvm/bin
+
+# The pinned Skia source (git-sync-deps already run).
+COPY --from=skia-src /skia/src /skia/src
+ENV SKIA_SRC=/skia/src
+
+USER user
+WORKDIR /packages/skia
+COPY --chown=user switch/skia/ /packages/skia/
+RUN dkp-makepkg
+
+# ---------------------------------------------------------------------------
 # runtime: the FINAL, slim image. Starts from `base` (toolchain + helpers, no
 # source / no depot_tools / no build artifacts) and installs ONLY the built
 # package files. The multi-GB V8 source tree and intermediate build outputs in
@@ -174,20 +220,26 @@ FROM base AS runtime
 
 # Collect every package's built .pkg.tar.zst into /packages (kept in the image
 # so they can be published / inspected), plus the qjsc host tool.
-COPY --from=portlibs /packages/pixman/*.pkg.tar.zst   /packages/pixman/
-COPY --from=portlibs /packages/cairo/*.pkg.tar.zst    /packages/cairo/
-COPY --from=portlibs /packages/quickjs/*.pkg.tar.zst  /packages/quickjs/
-COPY --from=portlibs /packages/wasm3/*.pkg.tar.zst    /packages/wasm3/
-COPY --from=v8-build /packages/v8/*.pkg.tar.zst       /packages/v8/
-COPY --from=portlibs /usr/local/bin/qjsc              /usr/local/bin/qjsc
+COPY --from=portlibs   /packages/pixman/*.pkg.tar.zst   /packages/pixman/
+COPY --from=portlibs   /packages/cairo/*.pkg.tar.zst    /packages/cairo/
+COPY --from=portlibs   /packages/quickjs/*.pkg.tar.zst  /packages/quickjs/
+COPY --from=portlibs   /packages/wasm3/*.pkg.tar.zst    /packages/wasm3/
+COPY --from=v8-build   /packages/v8/*.pkg.tar.zst       /packages/v8/
+COPY --from=skia-build /packages/skia/*.pkg.tar.zst     /packages/skia/
+COPY --from=portlibs   /usr/local/bin/qjsc              /usr/local/bin/qjsc
 
-# Install all packages (order matters: cairo depends on pixman). pacman pulls in
-# the already-present toolchain deps from `base`.
+# switch-skia depends on the GL stack + freetype/harfbuzz (prebuilt repo pkgs);
+# install those first so the local switch-skia package's deps resolve.
+RUN dkp-pacman -S --noconfirm \
+      switch-freetype switch-harfbuzz switch-mesa switch-libdrm_nouveau
+
+# Install all locally-built packages (order matters: cairo needs pixman).
 RUN dkp-pacman -U --noconfirm \
       /packages/pixman/*.pkg.tar.zst \
       /packages/cairo/*.pkg.tar.zst \
       /packages/quickjs/*.pkg.tar.zst \
       /packages/wasm3/*.pkg.tar.zst \
-      /packages/v8/*.pkg.tar.zst
+      /packages/v8/*.pkg.tar.zst \
+      /packages/skia/*.pkg.tar.zst
 
 WORKDIR /
