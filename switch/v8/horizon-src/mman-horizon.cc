@@ -90,14 +90,18 @@ class CodeArena {
     size_t want = (need < (size_t{64} << 20) ? (size_t{64} << 20) : need) +
                   (size_t{kWasmHeadroomMb} << 20);
 
-    // Budget-awareness: jitCreate maps the region TWICE (rx + rw aliases), and
-    // the V8 JS heap (data arena) also needs room. Query the kernel for this
-    // process's TOTAL memory grant, which already encodes applet (small,
-    // ~hundreds of MB) vs application/full-memory (multi-GB) mode — so we don't
-    // need to special-case appletGetAppletType(). Cap the arena at ~1/3 of total
-    // (the jitCreate pages are demand-resident, so this is a generous ceiling
-    // that still leaves the majority for the heap). Floor is V8's 64 MiB minimum
-    // code range; if the chosen size can't be mapped, the retry loop steps down.
+    // Budget guard: jitCreate maps the region TWICE (rx + rw aliases), so a
+    // size-S arena costs 2*S of real memory, and the V8 heap + data arena also
+    // need room. Cap the arena at ~1/3 of the process's TOTAL memory grant from
+    // svcGetInfo(InfoType_TotalMemorySize). This is a CEILING, not a target: it
+    // protects constrained modes (in applet mode total ~= 381 MiB, so the cap
+    // ~= 127 MiB lightly clamps the 128 MiB we want) without growing the arena
+    // when more memory is available (the fixed 128 MiB = 64 MiB JS code + 64 MiB
+    // WASM headroom is ample for real workloads). NB: we cap on TOTAL, not
+    // (total - used): in full-memory mode `used` already counts V8's big heap
+    // reservation, so available reads as only a few MiB even with ~3 GiB total —
+    // capping on `used` would wrongly starve the arena. Floor is V8's 64 MiB
+    // minimum code range; a failed jitCreate is handled by the retry loop below.
     u64 total = 0;
     if (R_SUCCEEDED(svcGetInfo(&total, InfoType_TotalMemorySize,
                                CUR_PROCESS_HANDLE, 0)) &&

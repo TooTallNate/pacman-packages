@@ -591,3 +591,26 @@ WASM's own reservations with `--wasm-max-initial-code-space-reservation` /
 
 V8 on the Switch now runs JS (Ignition -> Sparkplug -> Maglev -> TurboFan) AND
 WebAssembly.
+
+### Measured memory budgets (applet vs full-memory) — sizing rationale
+
+Logged `svcGetInfo(InfoType_TotalMemorySize/UsedMemorySize)` in both launch modes
+running the WASM test:
+
+| mode         | TotalMemorySize | UsedMemorySize | code arena |
+|--------------|----------------:|---------------:|-----------:|
+| applet       | ~381 MiB        | ~243 MiB       | ~127 MiB   |
+| full-memory  | ~3189 MiB       | ~3185 MiB      | 128 MiB    |
+
+Takeaways:
+- The `total/3` cap correctly protects applet mode (caps 128->127 MiB) and is a
+  no-op in full-memory mode (cap ~1 GiB >> 128 MiB want). The code arena does
+  NOT grow in full-memory mode — and shouldn't need to: 64 MiB JS code + 64 MiB
+  WASM headroom is ample. (If a future workload has huge/many WASM modules, raise
+  the fixed `want`, not the cap.)
+- IMPORTANT: cap on TOTAL, not (total - used). In full-memory mode `used` is
+  ~3185 of 3189 MiB because V8's heap + the data arena's ~1 GiB reservation are
+  already counted, so "available" reads as only ~4 MiB despite ~3 GiB total.
+  Capping on available would wrongly starve the code arena.
+
+Both modes: WASM `add(40,2)=42` and the deopt/OSR/GC battery 6/6, no crash.
