@@ -202,7 +202,7 @@ COPY --from=v8-src /v8/v8/third_party/llvm-build/Release+Asserts /opt/skia-llvm
 ENV SKIA_CLANG_DIR=/opt/skia-llvm/bin
 
 # The pinned Skia source (git-sync-deps already run).
-COPY --from=skia-src /skia/src /skia/src
+COPY --from=skia-src --chown=user /skia/src /skia/src
 ENV SKIA_SRC=/skia/src
 
 USER user
