@@ -535,3 +535,24 @@ This validates the full optimizing-tier lifecycle (compile -> OSR -> deopt ->
 GC-reclaim -> recompile) against the Horizon W^X code-write redirect (patch
 0003) and the dual rw/rx CodeMemory arena. Build the NRO with
 `hello-v8/build-bench.sh` against `main-jitstress.cc` (drop `-lqjs`).
+
+## W^X hardening: scope + the Horizon limit (hardware-confirmed)
+
+Reviewed the code memory model for hardening. Findings:
+
+- The core W^X property is already STRUCTURAL and correct: JitType_CodeMemory
+  gives a permanently-mapped rx (R-X) alias and rw (RW) alias of the same pages.
+  V8 executes via rx (never writable); code writes go through rw = rx + delta.
+  There is no in-place same-address permission flip on Horizon for homebrew
+  (svcSetProcessMemoryPermission is unavailable — see jitflip-poc), so this
+  alias split IS the W^X mechanism and can't be tightened further.
+- KEPT: stopped logging the rw alias base + the rx->rw delta in the mman boot
+  line (it now prints only rx + size + type). Those were the one piece of info
+  an attacker would need to locate the writable mirror of generated code.
+- TRIED + REVERTED: shrinking the DATA arena's writable surface by downgrading
+  read-only / no-access pages via svcSetMemoryPermission(R|None). Hardware
+  rejected every attempt with rc=0xd401 (InvalidMemState) — homebrew cannot
+  re-protect svcMapMemory-backed memory (same root restriction as the W^X flip).
+  So data pages stay RW once committed; the attempt is documented in
+  mman-horizon.cc SetPerm() so it isn't re-tried. No functional change
+  (jitstress still 6/6 on hardware).

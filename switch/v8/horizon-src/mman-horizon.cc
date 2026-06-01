@@ -92,8 +92,12 @@ class CodeArena {
     delta_ = rw_base - rx_base_;  // rw = rx + delta
     size_ = sz;
     next_ = rx_base_;
-    DiagLog("mman: code arena rx=%p rw=%p size=0x%zx delta=0x%lx type=%d\n",
-            (void*)rx_base_, (void*)rw_base, sz, (long)delta_, jit_.type);
+    // Hardening: do NOT log the writable (rw) alias base or the rw-rx delta.
+    // The rx alias is execute-only and the rw alias is the only writable view of
+    // generated code; leaking its address/delta to the SD log would hand an
+    // attacker the one piece of info needed to locate the writable code mirror.
+    DiagLog("mman: code arena rx=%p size=0x%zx type=%d\n", (void*)rx_base_, sz,
+            jit_.type);
     return true;
   }
 
@@ -267,16 +271,22 @@ class Arena {
     (void)size;
   }
 
-  // Make [addr,size) writable. With lazy commit, V8 calls SetPermissions(RW) on
-  // pages it reserved (PROT_NONE) -> we must COMMIT them here. Pages stay RW
-  // (no downgrade) since the rw alias must remain writable.
+  // Make [addr,size) usable. With lazy commit, V8 calls SetPermissions(RW) on
+  // pages it reserved (PROT_NONE) -> we COMMIT them here.
+  //
+  // NOTE: we do NOT downgrade committed pages to read-only / no-access. We tried
+  // svcSetMemoryPermission(R/None) here as a hardening step, but the kernel
+  // rejects it with 0xd401 (InvalidMemState) for our svcMapMemory-backed slab
+  // aliases — homebrew cannot re-protect this memory (the same restriction that
+  // blocks the in-place W^X flip; see jitflip-poc / PORTING-NOTES). So data
+  // pages stay RW once committed. (The code arena's W^X is enforced structurally
+  // by the JitType_CodeMemory rx/rw alias split, independent of this path.)
   void SetPerm(uintptr_t addr, size_t size, u32 perm) {
     if (base_ == 0 || !Contains(addr, size)) return;
     if (perm != Perm_None) {
       // Committing (RW / R). Ensure the slabs are backed.
       CommitRange(addr, RoundUpPage(size));
     }
-    // Keep pages RW regardless (rw alias stays writable); don't downgrade.
   }
 
   // Unmap ALL slabs + release the address-space reservation. Required before the
