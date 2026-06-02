@@ -24,7 +24,7 @@
 pkgname=switch-skia
 # Pinned to Skia's chrome/m149 milestone branch (latest stable at port time).
 pkgver=149
-pkgrel=1
+pkgrel=2
 pkgdesc="Google Skia 2D graphics library (CPU raster + Ganesh GL) for Nintendo Switch"
 arch=('any')
 url='https://skia.org/'
@@ -120,6 +120,18 @@ $(cat "$startdir/gn-args-gl.txt")"
         -isystem /opt/devkitpro/devkitA64/aarch64-none-elf/include \
         -isystem /opt/devkitpro/libnx/include \
         -c "$startdir/horizon-src/skia-horizon-port.c" -o "$srcdir/skia-horizon-port.o"
+
+    # The symbol(s) in this object (pread) are newlib *gap-fillers*, not Skia
+    # API. Other Switch ports (switch-libuv's libuv-horizon-port.o also provides
+    # pread) fill the same gaps, so two strong definitions would fail the link
+    # with "multiple definition of 'pread'". Mark every global in this object
+    # WEAK so any strong definition -- another port's or the embedder's -- wins
+    # silently, and ports filling the same gap never collide.
+    local A64=/opt/devkitpro/devkitA64/bin
+    "$A64/aarch64-none-elf-objcopy" \
+        $("$A64/aarch64-none-elf-nm" --defined-only --extern-only "$srcdir/skia-horizon-port.o" \
+            | awk '{print "--weaken-symbol=" $3}') \
+        "$srcdir/skia-horizon-port.o"
 }
 
 package() {
@@ -144,11 +156,15 @@ package() {
     # Horizon support object (pread shim) — link alongside either variant.
     install -m644 "$srcdir/skia-horizon-port.o" "$L/skia-horizon-port.o"
 
-    # Public headers: Skia is included as "include/core/SkCanvas.h" relative to
-    # the Skia source root, so install the include/ tree (and the modules/ tree
-    # for SkShaper/SkUnicode, included as "modules/skshaper/include/SkShaper.h")
-    # under $PORTLIBS_PREFIX/include/skia; consumers add -I .../include/skia.
-    cp -r include/* "$I/"
+    # Public headers: Skia headers cross-reference each other with the source-
+    # root-relative prefix, e.g. SkCanvas.h does #include "include/core/SkColor.h"
+    # and SkShaper.h is included as "modules/skshaper/include/SkShaper.h". So the
+    # consumer's -I root must be the Skia SOURCE ROOT, with include/ and modules/
+    # as subdirs under it. Install the include/ tree *itself* (NOT its contents)
+    # so the prefix resolves; consumers add -I .../include/skia.
+    #   correct:   $I/include/core/SkCanvas.h   (matches "include/core/SkCanvas.h")
+    #   wrong:     $I/core/SkCanvas.h           (cp -r include/* strips the prefix)
+    cp -r include "$I/include"
     install -d "$I/modules"
     cp -r modules/skshaper "$I/modules/"
     cp -r modules/skunicode "$I/modules/"
