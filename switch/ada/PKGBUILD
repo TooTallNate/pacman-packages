@@ -1,0 +1,73 @@
+# Maintainer:  Dave Murphy <davem@devkitpro.org>
+# Contributor: Nathan Rajlich <n@n8.io>
+#
+# Ada: a fast, spec-compliant WHATWG URL parser (C++), with a C API.
+# https://github.com/ada-url/ada
+#
+# Packaged from Ada's official "single-header" release amalgamation (ada.cpp +
+# ada.h + ada_c.h) rather than the full source tree: the amalgamation is exactly
+# what embedders use, builds in seconds, and has no third-party build deps.
+# Installs a static libada.a plus the public headers and a pkg-config file.
+
+pkgname=switch-ada
+pkgver=3.4.4
+pkgrel=1
+pkgdesc='WHATWG-compliant URL parser (Ada) for Nintendo Switch homebrew development'
+arch=('any')
+url='https://github.com/ada-url/ada'
+license=('Apache' 'MIT')   # dual-licensed Apache-2.0 / MIT
+options=(!strip libtool staticlibs)
+makedepends=('dkp-toolchain-vars' 'switch-pkg-config')
+groups=('switch-portlibs')
+
+# Ada ships the amalgamated single-header files as release assets (each with a
+# stable sha256), so fetch them directly.
+_base="https://github.com/ada-url/ada/releases/download/v${pkgver}"
+source=("ada-${pkgver}.cpp::${_base}/ada.cpp"
+        "ada-${pkgver}.h::${_base}/ada.h"
+        "ada_c-${pkgver}.h::${_base}/ada_c.h")
+sha256sums=('ac8fba37ceddb7c10ca5a24fd57a0f0a0ca32cd3d391e40c6f9f6b7af3801fd4'
+            'f20418137a442ee59208d1e25dbae5f12c63c361c935ca31002af45896f3ad6f'
+            'cdf7b3000d25302a0a3c486badbaf7f2082175f4a14eb098fec456523dd75789')
+
+build() {
+    source /opt/devkitpro/switchvars.sh
+    cd "$srcdir"
+
+    # ada.cpp #includes "ada.h"; the amalgamation expects them side by side.
+    cp "ada-${pkgver}.h" ada.h
+    cp "ada-${pkgver}.cpp" ada.cpp
+
+    # Build the static lib. C++20, no exceptions/RTTI to match the typical
+    # Switch embedder ABI (e.g. nx.js builds ada the same way). $CXXFLAGS from
+    # switchvars.sh carries the arch / -fPIC flags.
+    ${TOOL_PREFIX}g++ $CXXFLAGS -std=gnu++20 -fno-exceptions -fno-rtti \
+        -D__SWITCH__ -c ada.cpp -o ada.o
+    ${TOOL_PREFIX}gcc-ar rcs libada.a ada.o
+}
+
+package() {
+    source /opt/devkitpro/switchvars.sh
+    cd "$srcdir"
+
+    local L="$pkgdir/$PORTLIBS_PREFIX/lib"
+    local I="$pkgdir/$PORTLIBS_PREFIX/include"
+    install -d "$L/pkgconfig" "$I"
+
+    install -m644 libada.a               "$L/libada.a"
+    install -m644 "ada-${pkgver}.h"      "$I/ada.h"
+    install -m644 "ada_c-${pkgver}.h"    "$I/ada_c.h"
+
+    cat > "$L/pkgconfig/ada.pc" <<EOF
+prefix=$PORTLIBS_PREFIX
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: ada
+Version: ${pkgver}
+Description: WHATWG-compliant URL parser (Ada)
+URL: https://github.com/ada-url/ada
+Libs: -L\${libdir} -lada
+Cflags: -I\${includedir}
+EOF
+}
