@@ -24,7 +24,7 @@
 pkgname=switch-skia
 # Pinned to Skia's chrome/m149 milestone branch (latest stable at port time).
 pkgver=149
-pkgrel=2
+pkgrel=3
 pkgdesc="Google Skia 2D graphics library (CPU raster + Ganesh GL) for Nintendo Switch"
 arch=('any')
 url='https://skia.org/'
@@ -168,6 +168,10 @@ package() {
     install -d "$I/modules"
     cp -r modules/skshaper "$I/modules/"
     cp -r modules/skunicode "$I/modules/"
+    # skcms: a CORE header (include/core/SkColorSpace.h) does
+    # #include "modules/skcms/skcms.h", so any consumer touching color spaces
+    # (surfaces, images, ...) needs it present. Not optional.
+    cp -r modules/skcms "$I/modules/"
 
     # Example link recipes (CPU + GL).
     install -d "$pkgdir/$PORTLIBS_PREFIX/share/switch-skia"
