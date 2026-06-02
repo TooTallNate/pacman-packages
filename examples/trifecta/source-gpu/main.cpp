@@ -44,6 +44,10 @@
 #include "include/gpu/ganesh/gl/egl/GrGLMakeEGLInterface.h"
 #include "include/ports/SkFontMgr_empty.h"
 
+// V8 (Horizon) leaves svcMapMemory aliases mapped on exit; this releases them
+// so a reload from hbloader/hbmenu does not start with a corrupted address space.
+extern "C" void horizon_mman_teardown(void);
+
 static FILE* g_log;
 static void L(const char* fmt, ...) {
   char b[512]; va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof b, fmt, ap); va_end(ap);
@@ -249,5 +253,8 @@ int main(int argc, char** argv) {
   deinitEgl();
   if (g_log) fclose(g_log);
   socketExit();
+  // Release V8's manual svcMapMemory regions so the next hbloader launch starts
+  // with a clean address space (omitting this crashes the app on reload).
+  horizon_mman_teardown();
   return 0;
 }
