@@ -9,7 +9,7 @@ backend (`src/unix/posix-poll.c`) over libnx's BSD sockets + `poll()`.
 ## What the port consists of
 
 ### 1. Source patch — `0001-horizon-switch-port.patch`
-Applied to the upstream `dist.libuv.org` tarball. Seven changes:
+Applied to the upstream `dist.libuv.org` tarball. Eight changes:
 
 - **`CMakeLists.txt`**: a `Horizon`/`NintendoSwitch` `CMAKE_SYSTEM_NAME` branch
   selecting the source set:
@@ -19,10 +19,20 @@ Applied to the upstream `dist.libuv.org` tarball. Seven changes:
     `poll_fds*` fields the posix-poll backend needs);
   - define `struct ipv6_mreq` right after `<netinet/in.h>` (libnx defines
     `IPV6_JOIN_GROUP`/`struct in6_addr` but omits `ipv6_mreq`).
-- **`src/unix/core.c`**: guard the extended `getrusage` field copies
-  (`ru_maxrss`, `ru_minflt`, …) with `!defined(__SWITCH__)` — newlib's
-  `struct rusage` only has `ru_utime`/`ru_stime`. They stay zero in
-  `uv_rusage_t`, which is honest (Switch doesn't track them).
+- **`src/unix/core.c`**: two changes.
+  - Guard the extended `getrusage` field copies (`ru_maxrss`, `ru_minflt`, …)
+    with `!defined(__SWITCH__)` — newlib's `struct rusage` only has
+    `ru_utime`/`ru_stime`. They stay zero in `uv_rusage_t`, which is honest
+    (Switch doesn't track them).
+  - Make `uv__cloexec()` a no-op on `__SWITCH__`. Horizon has no `exec()`, so
+    `FD_CLOEXEC` is meaningless, AND libnx's `fcntl()` only supports
+    `F_GETFL`/`F_SETFL` — for any other command (like `F_SETFD`) it returns
+    `EOPNOTSUPP` as a **positive** value rather than `-1`+errno. The stock
+    `uv__cloexec` treats that non-zero return as failure and reports a spurious
+    error with a stale errno, which makes `uv__accept()` **close every freshly
+    accepted socket**. Symptom: a TCP server accepts exactly one connection and
+    then silently drops all subsequent ones. (Found via on-hardware TCP
+    benchmarking; see Hardware validation.)
 - **`src/unix/signal.c`** and **`src/threadpool.c`**: skip the two
   `pthread_atfork()` registrations under `__SWITCH__` (in
   `uv__signal_global_init` and the thread-pool `init_once`). Horizon has no
@@ -111,9 +121,20 @@ on two test NROs covering:
 - **Filesystem** (`uv_fs_open`/`write`/`read`/`close`/`unlink` on `sdmc:/`,
   all via the thread pool): full write→read roundtrip verified byte-for-byte.
 - **DNS** (`uv_getaddrinfo`): resolves through the thread-pool resolver.
+- **TCP server** (`uv_listen`/`uv_accept`/`uv_read_start`/`uv_write`): a libuv
+  TCP echo server benchmarked from a PC with `tcpkali`. Sustained ~28 MB/s of
+  echo throughput per direction (~230 Mbps RX), 102 connections handled with
+  zero accept errors and byte-symmetric echo (884 MB in / 831 MB out). This is
+  the test that surfaced the `uv__cloexec` bug above.
 
-Note: the Switch `bsd:` network stack does not deliver same-process `127.0.0.1`
-loopback *accepts* (an in-process listen→connect→accept never completes), so a
-loopback echo server/client in a single process will hang waiting to accept.
-This is a platform limitation, not a libuv issue; real client/server use against
-distinct peers is unaffected.
+Platform notes (not libuv issues):
+- The Switch `bsd:` service caps **concurrent** connections at ~25 (a firmware
+  session-pool limit driven by the socket buffer config); connections beyond
+  that don't complete their handshake (no accept error is raised).
+- It does not deliver same-process `127.0.0.1` loopback *accepts*, so an
+  in-process listen→connect→accept never completes (a loopback echo
+  server+client in one process would hang). Distinct peers are unaffected.
+- Use a socket config with adequate buffers, e.g. the values in
+  `examples/` (1 MB/4 MB TCP buffers, `sb_efficiency=8`,
+  `bsd_service_type=BsdServiceType_Auto`); overly small buffers break
+  accept/poll readiness on the firmware.

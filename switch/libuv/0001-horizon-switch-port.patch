@@ -82,10 +82,36 @@ index 2a129a5..dfb96de 100644
    if (pthread_atfork(NULL, NULL, &reset_once))
      abort();
 diff --git a/src/unix/core.c b/src/unix/core.c
-index 73027cb..006b411 100644
+index 73027cb..044ae68 100644
 --- a/src/unix/core.c
 +++ b/src/unix/core.c
-@@ -1106,7 +1106,7 @@ static int uv__getrusage(int who, uv_rusage_t* rusage) {
+@@ -698,6 +698,17 @@ int uv__nonblock_fcntl(int fd, int set) {
+ 
+ 
+ int uv__cloexec(int fd, int set) {
++#if defined(__SWITCH__)
++  /* Horizon (libnx) has no exec(), so FD_CLOEXEC is meaningless, and libnx's
++   * fcntl() only supports F_GETFL/F_SETFL -- for any other command it returns
++   * EOPNOTSUPP as a POSITIVE value (not -1 + errno). Treating that as success
++   * is required: otherwise uv__cloexec() reports a spurious failure (with a
++   * stale errno) and callers like uv__accept() close the freshly-accepted fd.
++   */
++  (void) fd;
++  (void) set;
++  return 0;
++#else
+   int flags;
+   int r;
+ 
+@@ -713,6 +724,7 @@ int uv__cloexec(int fd, int set) {
+     return UV__ERR(errno);
+ 
+   return 0;
++#endif
+ }
+ 
+ 
+@@ -1106,7 +1118,7 @@ static int uv__getrusage(int who, uv_rusage_t* rusage) {
    rusage->ru_stime.tv_sec = usage.ru_stime.tv_sec;
    rusage->ru_stime.tv_usec = usage.ru_stime.tv_usec;
  
