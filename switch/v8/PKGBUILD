@@ -163,7 +163,7 @@ build() {
 
     _gn_args_jit "$llvm" "$res" > "$srcdir/v8_gn_args.gn"
     gn gen "$out" --args="$(cat "$srcdir/v8_gn_args.gn")"
-    ninja -j2 -C "$out" v8_monolith
+    ninja -C "$out" v8_monolith
 
     # abseil is NOT bundled into libv8_monolith.a; assemble its object files
     # into a separate archive consumers must also link.
