@@ -614,3 +614,28 @@ Takeaways:
   Capping on available would wrongly starve the code arena.
 
 Both modes: WASM `add(40,2)=42` and the deopt/OSR/GC battery 6/6, no crash.
+
+### Runtime code-arena knob: `horizon_mman_set_code_budget()`
+
+The default code arena is 64 MiB JS code + 64 MiB WASM headroom = 128 MiB, and
+`jitCreate` dual-maps it (rx + rw) so it costs ~256 MiB of real address space
+(the data arena's reservation is lazy/virtual, but the code arena's two aliases
+are committed by `jitCreate`). Embedders that don't use WebAssembly can reclaim
+the headroom:
+
+```c
+extern "C" void horizon_mman_set_code_budget(size_t wasm_headroom_mb,
+                                             size_t max_code_mb);
+// call BEFORE V8 init; non-WASM app:
+horizon_mman_set_code_budget(/*wasm_headroom_mb=*/0, /*max_code_mb=*/0);
+```
+
+`wasm_headroom_mb = 0` drops the arena to the 64 MiB floor (~128 MiB real),
+freeing ~64 MiB. `max_code_mb` is an optional hard ceiling (never below V8's
+64 MiB minimum code range).
+
+Limit (measured on hardware): this does NOT let full-JIT V8 share the ~137 MiB
+applet budget with a GPU (Mesa) stack — V8's 64 MiB code floor dual-maps to
+~128 MiB, leaving too little for Mesa's GLSL compiler. For a GPU canvas in
+applet mode, run V8 jitless (`--jitless` + `code_range_size = 0`), which skips
+`jitCreate` entirely. See examples/trifecta.

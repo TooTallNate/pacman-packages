@@ -70,13 +70,16 @@ static void DiagLog(const char* fmt, ...) {
 // PROT_EXEC is a no-op (the rx alias is already executable; the rw alias is
 // already writable). One jitCreate region for the whole V8 code range.
 // ---------------------------------------------------------------------------
+// Runtime-tunable code-arena budget (set by the embedder via
+// horizon_mman_set_code_budget BEFORE V8 init; see the extern "C" API below for
+// full docs). Defaults preserve the original behavior (64 MiB WASM headroom,
+// automatic total/3 ceiling).
+static size_t g_wasm_headroom_mb = 64;
+static size_t g_max_code_mb = 0;
+
 class CodeArena {
  public:
-  // Extra MiB reserved in the code arena beyond V8's JS code-range reservation,
-  // to hold WebAssembly's separate code space (jump tables for all builtins +
-  // wasm function code). 64 covers a typical wasm workload; the address space is
-  // free until committed (jitCreate maps it, but unused pages aren't touched).
-  static constexpr size_t kWasmHeadroomMb = 64;
+  static constexpr size_t kCodeFloor = size_t{64} << 20;  // V8's min code range
 
   bool EnsureInit(size_t need) {
     if (initialized_) return rx_base_ != 0;
@@ -86,9 +89,10 @@ class CodeArena {
     // minimum) PLUS headroom for WebAssembly's separate code space. WASM
     // reserves its own region (builtin jump tables + function code) from this
     // same arena; without the headroom the JS reservation consumes everything
-    // and WASM OOMs ("Allocate initial wasm code space").
-    size_t want = (need < (size_t{64} << 20) ? (size_t{64} << 20) : need) +
-                  (size_t{kWasmHeadroomMb} << 20);
+    // and WASM OOMs ("Allocate initial wasm code space"). The headroom is
+    // embedder-tunable (g_wasm_headroom_mb): non-WASM apps set it to 0.
+    size_t want = (need < kCodeFloor ? kCodeFloor : need) +
+                  (g_wasm_headroom_mb << 20);
 
     // Budget guard: jitCreate maps the region TWICE (rx + rw aliases), so a
     // size-S arena costs 2*S of real memory, and the V8 heap + data arena also
@@ -96,28 +100,33 @@ class CodeArena {
     // svcGetInfo(InfoType_TotalMemorySize). This is a CEILING, not a target: it
     // protects constrained modes (in applet mode total ~= 381 MiB, so the cap
     // ~= 127 MiB lightly clamps the 128 MiB we want) without growing the arena
-    // when more memory is available (the fixed 128 MiB = 64 MiB JS code + 64 MiB
-    // WASM headroom is ample for real workloads). NB: we cap on TOTAL, not
-    // (total - used): in full-memory mode `used` already counts V8's big heap
-    // reservation, so available reads as only a few MiB even with ~3 GiB total —
-    // capping on `used` would wrongly starve the arena. Floor is V8's 64 MiB
-    // minimum code range; a failed jitCreate is handled by the retry loop below.
+    // when more memory is available. NB: we cap on TOTAL, not (total - used):
+    // in full-memory mode `used` already counts V8's big heap reservation, so
+    // available reads as only a few MiB even with ~3 GiB total — capping on
+    // `used` would wrongly starve the arena. Floor is V8's 64 MiB minimum code
+    // range; a failed jitCreate is handled by the retry loop below.
     u64 total = 0;
     if (R_SUCCEEDED(svcGetInfo(&total, InfoType_TotalMemorySize,
                                CUR_PROCESS_HANDLE, 0)) &&
         total != 0) {
       size_t cap = static_cast<size_t>(total) / 3;
-      const size_t floor = size_t{64} << 20;
-      if (cap < floor) cap = floor;
+      if (cap < kCodeFloor) cap = kCodeFloor;
       if (want > cap) want = cap;
+    }
+
+    // Explicit embedder ceiling (g_max_code_mb), if set, overrides downward.
+    if (g_max_code_mb != 0) {
+      size_t hard = g_max_code_mb << 20;
+      if (hard < kCodeFloor) hard = kCodeFloor;  // never below V8's minimum
+      if (want > hard) want = hard;
     }
 
     size_t sz = (want + 0xFFFFF) & ~size_t{0xFFFFF};
     Result rc = jitCreate(&jit_, sz);
     // If the budget-derived size fails to map, step down toward the floor.
-    while (R_FAILED(rc) && sz > (size_t{64} << 20)) {
+    while (R_FAILED(rc) && sz > kCodeFloor) {
       size_t half = sz / 2;
-      sz = (half < (size_t{64} << 20)) ? (size_t{64} << 20) : half;
+      sz = (half < kCodeFloor) ? kCodeFloor : half;
       DiagLog("mman: jitCreate retry at 0x%zx\n", sz);
       rc = jitCreate(&jit_, sz);
     }
@@ -462,6 +471,29 @@ int msync(void* addr, size_t length, int flags) {
   (void)length;
   (void)flags;
   return 0;
+}
+
+// Tune the JIT code-arena budget. MUST be called BEFORE V8 init (before the
+// first code allocation / jitCreate); has no effect once the arena exists.
+//
+//   wasm_headroom_mb : extra MiB reserved for WebAssembly's separate code space.
+//                      Default 64. Pass 0 for non-WASM apps to roughly HALVE the
+//                      JIT arena (it is jitCreate'd and dual-mapped, so dropping
+//                      64 MiB of headroom frees ~64 MiB of real memory). Useful
+//                      to reclaim memory for other uses, or to fit in moderately
+//                      constrained budgets.
+//   max_code_mb      : hard ceiling on the code arena in MiB (never below V8's
+//                      64 MiB minimum). 0 = automatic (total/3) budget guard.
+//
+// Example (non-WASM app): horizon_mman_set_code_budget(0, 0);
+//
+// NOTE: this CANNOT make full-JIT V8 coexist with a GPU (Mesa) stack in the
+// tight ~137 MiB applet budget: V8's code-range floor is 64 MiB, and jitCreate
+// dual-maps it to ~128 MiB real, leaving too little for Mesa's GLSL compiler.
+// For a GPU canvas in applet mode, run V8 jitless instead (skips jitCreate).
+void horizon_mman_set_code_budget(size_t wasm_headroom_mb, size_t max_code_mb) {
+  g_wasm_headroom_mb = wasm_headroom_mb;
+  g_max_code_mb = max_code_mb;
 }
 
 // Release all arena mappings + reservation. Call before the app returns to
