@@ -28,7 +28,7 @@ pkgname=switch-v8
 # Newer is better: the consolidated WritableJitAllocation code-write path (our
 # rw/rx redirection chokepoint for Horizon W^X) is most mature on recent trunk.
 pkgver=15.0.243
-pkgrel=1
+pkgrel=2
 pkgdesc="V8 JavaScript engine (full JIT: Sparkplug+TurboFan) for Nintendo Switch / devkitA64"
 arch=('any')
 url='https://v8.dev/'

@@ -4,6 +4,14 @@
 // Small libc gap-fillers for Nintendo Switch (Horizon / devkitA64 / newlib).
 // newlib declares these symbols' constants/prototypes but does not implement
 // the functions. V8 references them, so provide minimal implementations.
+//
+// These are libc fallbacks, NOT part of V8's API. Other Switch ports (e.g.
+// switch-libuv's libuv-horizon-port.o) defensively fill some of the same gaps
+// (pthread_sigmask, sysconf). To avoid "multiple definition" link errors when
+// an embedder links V8 alongside such a port, every filler here is WEAK: any
+// strong definition (another port's, or the embedder's own) wins silently. The
+// fillers are semantically identical trivial stubs across ports, so which one
+// the linker keeps does not matter.
 
 #include <cstdlib>
 #include <cerrno>
@@ -13,11 +21,13 @@
 
 #include <switch.h>  // svcGetInfo, InfoType_*
 
+#define HORIZON_WEAK __attribute__((weak))
+
 extern "C" {
 
 // newlib/libnx provides no pthread_sigmask (Horizon has no per-thread signal
 // masks). abseil references it; provide a no-op success stub.
-int pthread_sigmask(int /*how*/, const sigset_t* /*set*/, sigset_t* oldset) {
+HORIZON_WEAK int pthread_sigmask(int /*how*/, const sigset_t* /*set*/, sigset_t* oldset) {
   if (oldset != nullptr) {
     // Report an empty old mask.
     sigemptyset(oldset);
@@ -26,7 +36,7 @@ int pthread_sigmask(int /*how*/, const sigset_t* /*set*/, sigset_t* oldset) {
 }
 
 // newlib has aligned_alloc but not posix_memalign. Wrap it.
-int posix_memalign(void** memptr, size_t alignment, size_t size) {
+HORIZON_WEAK int posix_memalign(void** memptr, size_t alignment, size_t size) {
   // alignment must be a power of two and a multiple of sizeof(void*).
   if (alignment < sizeof(void*) || (alignment & (alignment - 1)) != 0) {
     return EINVAL;
@@ -40,7 +50,7 @@ int posix_memalign(void** memptr, size_t alignment, size_t size) {
 }
 
 // newlib declares _SC_* constants and sysconf() but does not implement it.
-long sysconf(int name) {
+HORIZON_WEAK long sysconf(int name) {
   switch (name) {
     case _SC_PAGESIZE:  // == _SC_PAGE_SIZE
       return 0x1000;    // Horizon page size is 4 KiB.

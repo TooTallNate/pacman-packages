@@ -22,7 +22,7 @@
 
 pkgname=switch-libuv
 pkgver=1.52.1
-pkgrel=1
+pkgrel=2
 pkgdesc='libuv cross-platform asynchronous I/O (adapted for Nintendo Switch homebrew development)'
 arch=('any')
 url='https://libuv.org/'
@@ -72,6 +72,20 @@ build() {
         -D__SWITCH__ -D_GNU_SOURCE -DSSIZE_MAX=0x7fffffffffffffffL \
         -isystem /opt/devkitpro/libnx/include \
         -c "$startdir/horizon-port.c" -o "$srcdir/libuv-horizon-port.o"
+
+    # Every symbol in this object is a newlib *gap-filler* (a fallback for a
+    # function newlib declares but does not implement), NOT part of libuv's API.
+    # Other Switch ports (e.g. switch-v8's libc-horizon.o) defensively provide
+    # some of the same fillers (pthread_sigmask, sysconf, ...). If both are
+    # strong definitions the link fails with "multiple definition of ...".
+    # Mark every global in this object WEAK so any strong definition -- another
+    # port's, or the embedder's own -- wins silently, and two ports that both
+    # fill the same gap never collide. The fillers are semantically identical
+    # trivial stubs across ports, so which one the linker keeps is irrelevant.
+    ${TOOL_PREFIX}objcopy \
+        $(${TOOL_PREFIX}nm --defined-only --extern-only "$srcdir/libuv-horizon-port.o" \
+            | awk '{print "--weaken-symbol=" $3}') \
+        "$srcdir/libuv-horizon-port.o"
 }
 
 package() {
