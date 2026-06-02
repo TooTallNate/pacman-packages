@@ -53,6 +53,34 @@ index c6ba419..8841170 100644
  # include "uv/posix.h"
  #endif
  
+diff --git a/src/threadpool.c b/src/threadpool.c
+index 2a129a5..dfb96de 100644
+--- a/src/threadpool.c
++++ b/src/threadpool.c
+@@ -252,7 +252,7 @@ static void init_threads(void) {
+ }
+ 
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__SWITCH__)
+ static void reset_once(void) {
+   uv_once_t child_once = UV_ONCE_INIT;
+   memcpy(&once, &child_once, sizeof(child_once));
+@@ -261,10 +261,13 @@ static void reset_once(void) {
+ 
+ 
+ static void init_once(void) {
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(__SWITCH__)
+   /* Re-initialize the threadpool after fork.
+    * Note that this discards the global mutex and condition as well
+    * as the work queue.
++   *
++   * Skipped on Horizon (Switch): no fork(), and newlib's pthread_atfork
++   * faults under hbloader (same as in src/unix/signal.c).
+    */
+   if (pthread_atfork(NULL, NULL, &reset_once))
+     abort();
 diff --git a/src/unix/core.c b/src/unix/core.c
 index 73027cb..006b411 100644
 --- a/src/unix/core.c
@@ -177,3 +205,46 @@ index 0000000..6be7dc6
 +  *count = kCores;
 +  return 0;
 +}
+diff --git a/src/unix/signal.c b/src/unix/signal.c
+index 91fb149..6362d3f 100644
+--- a/src/unix/signal.c
++++ b/src/unix/signal.c
+@@ -62,6 +62,7 @@ RB_GENERATE_STATIC(uv__signal_tree_s,
+ static void uv__signal_global_reinit(void);
+ 
+ static void uv__signal_global_init(void) {
++#if !defined(__SWITCH__)
+   if (uv__signal_lock_pipefd[0] == -1)
+     /* pthread_atfork can register before and after handlers, one
+      * for each child. This only registers one for the child. That
+@@ -71,6 +72,9 @@ static void uv__signal_global_init(void) {
+      */
+     if (pthread_atfork(NULL, NULL, &uv__signal_global_reinit))
+       abort();
++#endif
++  /* Horizon has no fork(); pthread_atfork is meaningless and its newlib
++   * implementation touches fork/reentrancy state that faults under hbl. */
+ 
+   uv__signal_global_reinit();
+ }
+diff --git a/src/uv-common.c b/src/uv-common.c
+index e5a7632..4468f80 100644
+--- a/src/uv-common.c
++++ b/src/uv-common.c
+@@ -967,8 +967,15 @@ void uv_free_cpu_info(uv_cpu_info_t* cpu_infos, int count) {
+ /* Also covers __clang__ and __INTEL_COMPILER. Disabled on Windows because
+  * threads have already been forcibly terminated by the operating system
+  * by the time destructors run, ergo, it's not safe to try to clean them up.
++ *
++ * Disabled on Horizon (Switch) too: this destructor runs from
++ * __libc_fini_array at process teardown, by which point the application has
++ * typically already called socketExit()/service-exit, so closing the
++ * socket-backed signal/async pipe fds here dereferences torn-down libnx state
++ * and faults. Embedders that want explicit cleanup can call
++ * uv_library_shutdown() directly while the socket layer is still up.
+  */
+-#if defined(__GNUC__) && !defined(_WIN32)
++#if defined(__GNUC__) && !defined(_WIN32) && !defined(__SWITCH__)
+ __attribute__((destructor))
+ #endif
+ void uv_library_shutdown(void) {

@@ -37,6 +37,10 @@
 #include <grp.h>
 #include <sched.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 /* newlib's <sys/resource.h> declares getrusage + struct rusage but NOT
  * getrlimit / struct rlimit. Pull it in for rusage, then supply rlimit. */
@@ -120,7 +124,7 @@ ssize_t writev(int fd, const struct iovec* iov, int iovcnt) {
 int fchown(int fd, uid_t o, gid_t g) { (void)fd;(void)o;(void)g; return 0; }
 int chown(const char* p, uid_t o, gid_t g) { (void)p;(void)o;(void)g; return 0; }
 int lchown(const char* p, uid_t o, gid_t g) { (void)p;(void)o;(void)g; return 0; }
-int futimens(int fd, const struct timespec* times) { (void)fd;(void)times; return 0; }
+int futimens(int fd, const struct timespec times[2]) { (void)fd;(void)times; return 0; }
 int ttyname_r(int fd, char* buf, size_t len) { (void)fd;(void)buf;(void)len; return ENOTTY; }
 
 /* ---- Signals (no POSIX signal delivery on Horizon). */
@@ -148,7 +152,72 @@ int getgrgid_r(gid_t gid, struct group* grp, char* buf, size_t buflen, struct gr
 /* ---- Process spawning (no fork/exec on Horizon). */
 pid_t waitpid(pid_t pid, int* status, int options) { (void)pid;(void)options; if(status)*status=0; errno = ECHILD; return -1; }
 int execvp(const char* file, char* const argv[]) { (void)file;(void)argv; errno = ENOSYS; return -1; }
-int pipe(int fds[2]) { (void)fds; errno = ENOSYS; return -1; }
+
+/* ---- pipe()/pipe2(): Horizon (libnx) has no anonymous pipes and no
+ * socketpair(), but it DOES have working loopback TCP. libuv only needs a pipe
+ * for its self-wakeup mechanism (the async/signal watcher): one fd it can
+ * poll() for readability and another it can write a byte to. Emulate that with
+ * a connected 127.0.0.1 TCP socket pair (listen -> connect -> accept). fds[0]
+ * is the read end (accepted side), fds[1] the write end (connected side). */
+static int nx__loopback_pair(int fds[2]) {
+  int lst = -1, cli = -1, srv = -1;
+  struct sockaddr_in addr;
+  socklen_t alen;
+
+  lst = socket(AF_INET, SOCK_STREAM, 0);
+  if (lst < 0) goto fail;
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;                              /* ephemeral port */
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  /* 127.0.0.1 */
+  if (bind(lst, (struct sockaddr*)&addr, sizeof(addr)) < 0) goto fail;
+  if (listen(lst, 1) < 0) goto fail;
+
+  /* discover the bound port */
+  alen = sizeof(addr);
+  if (getsockname(lst, (struct sockaddr*)&addr, &alen) < 0) goto fail;
+
+  cli = socket(AF_INET, SOCK_STREAM, 0);
+  if (cli < 0) goto fail;
+  if (connect(cli, (struct sockaddr*)&addr, sizeof(addr)) < 0) goto fail;
+
+  alen = sizeof(addr);
+  srv = accept(lst, (struct sockaddr*)&addr, &alen);
+  if (srv < 0) goto fail;
+
+  close(lst);
+  fds[0] = srv;  /* read end  */
+  fds[1] = cli;  /* write end */
+  return 0;
+
+fail: {
+    int e = errno;
+    if (lst >= 0) close(lst);
+    if (cli >= 0) close(cli);
+    if (srv >= 0) close(srv);
+    errno = e ? e : ENOSYS;
+    return -1;
+  }
+}
+
+int pipe(int fds[2]) {
+  if (!fds) { errno = EFAULT; return -1; }
+  return nx__loopback_pair(fds);
+}
+
+int pipe2(int fds[2], int flags) {
+  if (pipe(fds)) return -1;
+  if (flags & O_NONBLOCK) {
+    fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL, 0) | O_NONBLOCK);
+    fcntl(fds[1], F_SETFL, fcntl(fds[1], F_GETFL, 0) | O_NONBLOCK);
+  }
+  if (flags & O_CLOEXEC) {
+    fcntl(fds[0], F_SETFD, fcntl(fds[0], F_GETFD, 0) | FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, fcntl(fds[1], F_GETFD, 0) | FD_CLOEXEC);
+  }
+  return 0;
+}
 
 /* ---- Thread scheduling / naming (best-effort no-ops). */
 int pthread_getschedparam(pthread_t t, int* policy, struct sched_param* param) {
