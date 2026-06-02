@@ -342,8 +342,24 @@ class Arena {
   // Unmap ALL slabs + release the address-space reservation. Required before the
   // .nro returns to hbloader/hbmenu: libnx's exit does NOT unmap manual
   // svcMapMemory regions, so leaked aliases corrupt the next process.
+  //
+  // CRITICAL ordering (fixes hbloader heap corruption on relaunch): the slab
+  // `src` blocks are memalign'd from the SHARED hbloader heap, and that heap
+  // PERSISTS across NRO launches (hbloader pre-allocates it via svcSetHeapSize
+  // and passes it to every child via the homebrew env). While a src block is
+  // svcMapMemory-aliased it is MemType_WeirdMappedMem; freeing one src back into
+  // newlib's allocator while an adjacent src is still aliased makes newlib's
+  // free-list coalescing read a "weird-mapped" neighbor and corrupt the list —
+  // which the NEXT process inherits (it crashes in malloc, not us). So do this
+  // in two strict phases:
+  //   1. svcUnmapMemory EVERY slab first (fully restore all src ranges to normal
+  //      heap state). Flush D-cache on the arena alias first for coherency,
+  //      since V8 wrote through the dst alias.
+  //   2. Only AFTER all are unmapped, free() the src blocks (now every neighbor
+  //      a coalesce might touch is back to normal heap memory).
   void Teardown() {
     if (base_ == 0) return;
+    // Phase 1: unmap all aliases.
     for (size_t i = 0; i < num_slabs_; i++) {
       if (slab_src_[i] == nullptr) continue;
       uintptr_t slab_addr = base_ + i * kSlab;
@@ -351,7 +367,12 @@ class Arena {
       if (slab_addr + slab > base_ + arena_size_) {
         slab = (base_ + arena_size_) - slab_addr;
       }
+      armDCacheFlush(reinterpret_cast<void*>(slab_addr), slab);
       svcUnmapMemory(reinterpret_cast<void*>(slab_addr), slab_src_[i], slab);
+    }
+    // Phase 2: now that no src is aliased, return them to the heap.
+    for (size_t i = 0; i < num_slabs_; i++) {
+      if (slab_src_[i] == nullptr) continue;
       free(slab_src_[i]);
       slab_src_[i] = nullptr;
     }
