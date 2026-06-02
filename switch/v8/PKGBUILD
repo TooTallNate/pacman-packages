@@ -28,7 +28,7 @@ pkgname=switch-v8
 # Newer is better: the consolidated WritableJitAllocation code-write path (our
 # rw/rx redirection chokepoint for Horizon W^X) is most mature on recent trunk.
 pkgver=15.0.243
-pkgrel=3
+pkgrel=4
 pkgdesc="V8 JavaScript engine (full JIT: Sparkplug+TurboFan) for Nintendo Switch / devkitA64"
 arch=('any')
 url='https://v8.dev/'
@@ -83,13 +83,26 @@ horizon_clang_resource = "$res"
 $host_extra
 
 # Full JIT: interpreter + Sparkplug (baseline) + Maglev (mid-tier) + TurboFan
-# (top-tier optimizing). Maglev is default-on for arm64 upstream and validated
-# 9/9 on hardware (its fjcvtzs uses are JSCVT-guarded with Fcvtzs fallbacks, and
-# it shares TurboFan's WritableJitAllocation codegen path that patch 0003
-# redirects for W^X).
+# (top-tier optimizing). Maglev is default-on for arm64 upstream and shares
+# TurboFan's WritableJitAllocation codegen path that patch 0003 redirects for
+# W^X. NOTE: the runtime JIT only emits fjcvtzs when CpuFeatures has JSCVT, which
+# is correctly OFF on Horizon (no HWCAP) — the real JSCVT hazard was the SNAPSHOT
+# baking in host CPU features; see v8_use_host_cpu_arm_features below.
 v8_enable_sparkplug = true
 v8_enable_turbofan = true
 v8_enable_maglev = true
+
+# CRITICAL for cross-compiling on an arm64 host (e.g. an Apple-Silicon Mac):
+# default is TRUE, which makes mksnapshot fold the BUILD HOST's arm64 CPU
+# features into the cross-compiled snapshot builtins. The M-series host is
+# ARMv8.5+, so this bakes FJCVTZS (ARMv8.3 JSCVT), LSE, DOTPROD, etc. into the
+# snapshot — instructions the Switch's Cortex-A57 (ARMv8.0) does NOT implement,
+# crashing at runtime with "Undefined Instruction" (opcode 0x1e7e0008 = FJCVTZS)
+# as soon as number-heavy JIT'd JS runs. Forcing this false means the snapshot
+# uses only target-OS features (none for V8_TARGET_OS_LINUX), and the runtime
+# JIT gates JSCVT on base::CPU::has_jscvt() which is false on Horizon (no HWCAP).
+# See V8-JSCVT-CRASH.md.
+v8_use_host_cpu_arm_features = false
 
 v8_monolithic = true
 v8_static_library = true
