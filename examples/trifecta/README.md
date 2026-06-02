@@ -15,7 +15,10 @@ Two rendering backends are provided:
 | `make` target | Skia backend | Output to | Notes |
 |---|---|---|---|
 | `make` (default) | Ganesh **GPU** (GL/GLES via EGL + Mesa/nouveau) | EGL window surface | 60 fps |
-| `make BACKEND=cpu` | **CPU** raster | libnx framebuffer blit | ~40 fps |
+| `make BACKEND=cpu` | **CPU** raster | libnx framebuffer blit | 60 fps |
+
+Both backends hit a clean vsync-locked 60 fps for this scene; the GPU path has
+more headroom for heavier scenes.
 
 Copy the resulting `trifecta.nro` to `sdmc:/switch/` and launch from hbmenu.
 Hold **+** to exit. Logs go to `sdmc:/trifecta.log`.
@@ -37,13 +40,20 @@ references — Skia keeps its own bundled, ICU-free HarfBuzz internally.
 
 ## The memory / JIT lesson (important for embedders)
 
-The Switch runs homebrew in two very different memory regimes, and **V8's JIT
-and the GPU (Mesa) stack contend for memory in the tight one**:
+The Switch runs homebrew in two very different memory regimes. **The catch is
+narrow: only the GPU (Mesa) path contends with V8's JIT, and only in the tight
+(applet) regime.** CPU rendering runs full JIT at 60 fps everywhere.
 
-| launch mode | free RAM | full-JIT V8 + GPU Skia? |
-|---|---|---|
-| **application** (NSP install, or hbmenu via hold-R title-redirect) | ~3 GiB | ✅ works, 60 fps |
-| **applet** (NRO from Album/hbmenu) | ~137 MiB | ❌ **crashes** |
+| backend | launch mode | free RAM | V8 config | result |
+|---|---|---|---|---|
+| CPU | applet | ~137 MiB | full JIT | ✅ 60 fps |
+| CPU | application | ~3 GiB | full JIT | ✅ 60 fps |
+| GPU | application | ~3 GiB | full JIT | ✅ 60 fps |
+| GPU | applet | ~137 MiB | **jitless** | ✅ 60 fps |
+| GPU | applet | ~137 MiB | full JIT | ❌ **crashes** |
+
+(application = NSP install, or hbmenu via hold-R title-redirect; applet = NRO
+from Album/hbmenu.)
 
 Why it crashes in applet mode: V8's full-JIT path calls libnx `jitCreate` for a
 ~128 MiB code region, which is **dual-mapped** (rx + rw) ≈ 254 MiB of real
@@ -69,23 +79,27 @@ v8::V8::SetFlagsFromString("--jitless --single-threaded --single-threaded-gc "
 params.constraints.set_code_range_size_in_bytes(0);
 ```
 
-### Implication for nx.js (or any V8 + GPU-canvas runtime)
+### Implication for nx.js
 
-nx.js ships **both** an NRO (applet) and an NSP (application), so both regimes
-are real. Gate the JIT on **measured free memory**, not a hardcoded mode:
+nx.js ships **both** an NRO (applet) and an NSP (application). The good news:
 
-```
-free = svcGetInfo(TotalMemorySize) - svcGetInfo(UsedMemorySize)
-if (free comfortably covers V8's code range + the GPU/Mesa stack)
-    full JIT           // NSP / full-memory: best JS performance
-else
-    jitless            // NRO / applet: GPU canvas fits, JS runs interpreted
-```
+- **CPU canvas (cairo today, or Skia-CPU): use full JIT everywhere.** No Mesa,
+  no memory conflict, 60 fps in applet *and* application mode. This is the
+  simplest, recommended default — and matches what QuickJS + cairo already did.
+- **GPU canvas (Skia GL): full JIT only when there's headroom.** It conflicts
+  with V8's JIT only in the tight applet regime. So gate on measured free RAM:
 
-The honest tradeoff in applet mode is **fast JS (full JIT, no GPU canvas)** vs
-**GPU canvas (jitless, slower JS)** — 137 MiB can't fit both. For a graphical
-runtime, GPU canvas wins, so jitless is the right applet-mode default; NSP users
-get full JIT + GPU together.
+  ```
+  free = svcGetInfo(TotalMemorySize) - svcGetInfo(UsedMemorySize)
+  if (free covers V8's code range + the GPU/Mesa stack)  full JIT   // NSP
+  else                                                   jitless    // NRO
+  ```
+
+  The applet-mode tradeoff is fast JS (full JIT, no GPU canvas) vs GPU canvas
+  (jitless, interpreted JS) — 137 MiB can't fit both.
+
+In short: the jitless dance is **only** needed for a GPU canvas in applet mode.
+A CPU canvas needs none of it.
 
 ## Other integration gotchas surfaced by this demo
 

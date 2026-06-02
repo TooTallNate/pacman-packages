@@ -6,10 +6,10 @@
 //   * Skia   - the CPU raster backend renders the V8-computed circles + a HUD
 //              text line into a bitmap, blitted to the libnx framebuffer.
 //
-// CPU backend (no EGL/GL/Mesa): has no Mesa dependency, so it works with V8 in
-// FULL-JIT mode even in applet mode. (The GPU backend instead runs V8 jitless in
-// applet mode to leave room for Mesa's shader compiler -- see ../source-gpu and
-// ../README.md.) CPU raster is slower (~40 fps vs the GPU path's 60).
+// CPU backend (no EGL/GL/Mesa): no Mesa dependency, so it runs V8 in FULL JIT
+// in BOTH applet and full-memory mode -- and hits a clean vsync-locked 60 fps
+// for this scene. (The GPU backend must run V8 jitless in applet mode to leave
+// room for Mesa's shader compiler; see ../source-gpu and ../README.md.)
 // Logs to sdmc:/trifecta.log. Hold + to exit.
 #include <stdio.h>
 #include <stdarg.h>
@@ -87,6 +87,7 @@ static uv_timer_t timer;
 static int frame = 0;
 static uint64_t last_tick = 0;
 static double fps = 0;
+static PadState g_pad;
 
 struct Circle { float x, y, r; uint32_t c; };
 
@@ -168,10 +169,10 @@ static void timer_cb(uv_timer_t* t) {
   if (frame % 60 == 0) L("[frame %d] fps=%.1f\n", frame, fps);
   frame++;
 
-  static PadState pad; static bool pi = false;
-  if (!pi) { padConfigureInput(1, HidNpadStyleSet_NpadStandard); padInitializeDefault(&pad); pi = true; }
-  padUpdate(&pad);
-  if ((padGetButtonsDown(&pad) & HidNpadButton_Plus) || !appletMainLoop()) {
+  padUpdate(&g_pad);
+  // Exit only on +. (Do NOT gate on appletMainLoop(): in title-redirect mode it
+  // can return false immediately and end the loop at frame 1.)
+  if (padGetButtonsDown(&g_pad) & HidNpadButton_Plus) {
     uv_timer_stop(t);
     uv_close((uv_handle_t*)t, nullptr);
   }
@@ -239,12 +240,15 @@ int main(int argc, char** argv) {
   }
   L("JS scene() ready\n");
 
+  padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+  padInitializeDefault(&g_pad);
+
   loop = uv_default_loop();
   uv_timer_init(loop, &timer);
-  uv_timer_start(&timer, timer_cb, 0, 16);
+  uv_timer_start(&timer, timer_cb, 0, 1);   // ~as fast as possible (1ms repeat)
   L("--- running; hold + to exit ---\n");
   uv_run(loop, UV_RUN_DEFAULT);
-  L("--- loop done (frames=%d) ---\n", frame);
+  L("--- loop done (frames=%d, last fps=%.1f) ---\n", frame, fps);
 
   surface.reset();
   typeface.reset();
