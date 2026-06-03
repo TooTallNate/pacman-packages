@@ -193,6 +193,17 @@ RUN dkp-makepkg
 # ---------------------------------------------------------------------------
 FROM base AS host-v8-build
 
+# Use the distro clang-16 + its stock libc++ (NOT V8's bundled libc++). V8's
+# bundled libc++ is configured with _LIBCPP_ABI_NAMESPACE=__Cr (Chromium's
+# private ABI namespace) — symbols become std::__Cr::*. Skia and the nx.js
+# harness use the stock libc++ (std::__1::*), so a __Cr V8 cannot link against
+# them (undefined refs for any V8 API taking std:: types). Building V8 with
+# use_custom_libcxx=false against clang-16's stock libc++ keeps all three on the
+# SAME __1 ABI. clang-16 is new enough for V8 m15's C++20 needs.
+RUN apt-get update && apt-get install -y \
+      clang-16 libc++-16-dev libc++abi-16-dev lld-16 && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=v8-src /opt/depot_tools /opt/depot_tools
 ENV PATH="/opt/depot_tools:${PATH}"
 ENV DEPOT_TOOLS_UPDATE=0
@@ -201,18 +212,15 @@ RUN echo "." > /opt/depot_tools/python3_bin_reldir.txt && \
 
 COPY --from=v8-src /v8/v8 /v8/v8
 WORKDIR /v8/v8
-# Host build uses V8's bundled Clang + the default linux toolchain. No Horizon
-# patches/toolchain. v8_use_host_cpu_arm_features can stay default here: the
-# binary runs on the same host it's built on, so there's no snapshot/CPU
-# mismatch (unlike the Switch cross-compile).
-# NOTE: unlike the Switch build (which links devkitA64's libstdc++ via
-# use_custom_libcxx=false), the HOST build keeps V8's bundled libc++
-# (use_custom_libcxx defaults true). The base image's system libstdc++ is older
-# than what V8 m15 needs (std::bit_cast / std::make_unique_for_overwrite), and
-# V8's bundled Clang+libc++ is modern and self-consistent. The harness links
-# this static V8 with libc++ symbols included in the archive.
+# use_custom_libcxx=false + clang_base_path pointing at the distro clang-16 so
+# V8 uses the stock libc++ (std::__1) shared with Skia and the harness. No
+# Horizon patches/toolchain (host build). v8_use_host_cpu_arm_features is
+# irrelevant on the x64 CI host.
 RUN cat > host-args.gn <<'EOF'
 is_clang = true
+clang_base_path = "/usr/lib/llvm-16"
+clang_use_chrome_plugins = false
+use_custom_libcxx = false
 is_debug = false
 symbol_level = 1
 enable_rust = false
