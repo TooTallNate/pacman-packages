@@ -206,7 +206,12 @@ RUN apt-get update && apt-get install -y \
     # V8's GN build derives the clang resource dir from its own expected clang
     # version (23 for V8 15.x), but the distro clang-16 ships resources under
     # clang/16.0.6. Symlink so ninja can find libclang_rt.builtins.a.
-    ln -s "$(clang-16 -print-resource-dir)" /usr/lib/llvm-16/lib/clang/23
+    ln -s "$(clang-16 -print-resource-dir)" /usr/lib/llvm-16/lib/clang/23 && \
+    # V8 also expects the newer per-triple layout (lib/<triple>/libclang_rt.builtins.a)
+    # but clang-16 uses the old layout (lib/linux/libclang_rt.builtins-<arch>.a).
+    mkdir -p /usr/lib/llvm-16/lib/clang/23/lib/x86_64-unknown-linux-gnu && \
+    ln -sf "$(clang-16 -print-resource-dir)/lib/linux/libclang_rt.builtins-x86_64.a" \
+           /usr/lib/llvm-16/lib/clang/23/lib/x86_64-unknown-linux-gnu/libclang_rt.builtins.a
 
 COPY --from=v8-src /opt/depot_tools /opt/depot_tools
 ENV PATH="/opt/depot_tools:${PATH}"
