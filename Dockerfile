@@ -289,7 +289,7 @@ FROM base AS host-skia-build
 
 USER root
 RUN apt-get update && apt-get install -y \
-      libfreetype-dev libpng-dev libjpeg-turbo8-dev libwebp-dev \
+      libfreetype-dev libpng-dev libjpeg62-turbo-dev libwebp-dev \
       zlib1g-dev clang && \
     rm -rf /var/lib/apt/lists/*
 
@@ -401,7 +401,7 @@ COPY --from=host-skia-build  /opt/host/skia  /opt/host/skia
 COPY --from=host-libuv-build /opt/host/libuv /opt/host/libuv
 RUN apt-get update && apt-get install -y \
       libmbedtls-dev \
-      libfreetype-dev libharfbuzz-dev libpng-dev libjpeg-turbo8-dev \
+      libfreetype-dev libharfbuzz-dev libpng-dev libjpeg62-turbo-dev \
       libwebp-dev zlib1g-dev libzstd-dev && \
     rm -rf /var/lib/apt/lists/*
 
