@@ -318,6 +318,7 @@ skia_use_icu = false
 skia_use_libgrapheme = true
 skia_enable_skshaper = true
 skia_enable_skunicode = true
+skia_enable_pdf = false
 skia_enable_fontmgr_custom_empty = true
 skia_use_libjpeg_turbo_decode = true
 skia_use_libjpeg_turbo_encode = true
