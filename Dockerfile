@@ -227,6 +227,7 @@ v8_enable_sandbox = false
 v8_enable_pointer_compression = false
 cppgc_enable_caged_heap = false
 treat_warnings_as_errors = false
+use_sysroot = false
 EOF
 RUN gn gen out/host --args="$(cat host-args.gn)" && \
     ninja -C out/host v8_monolith && \
