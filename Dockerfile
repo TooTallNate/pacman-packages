@@ -205,6 +205,12 @@ WORKDIR /v8/v8
 # patches/toolchain. v8_use_host_cpu_arm_features can stay default here: the
 # binary runs on the same host it's built on, so there's no snapshot/CPU
 # mismatch (unlike the Switch cross-compile).
+# NOTE: unlike the Switch build (which links devkitA64's libstdc++ via
+# use_custom_libcxx=false), the HOST build keeps V8's bundled libc++
+# (use_custom_libcxx defaults true). The base image's system libstdc++ is older
+# than what V8 m15 needs (std::bit_cast / std::make_unique_for_overwrite), and
+# V8's bundled Clang+libc++ is modern and self-consistent. The harness links
+# this static V8 with libc++ symbols included in the archive.
 RUN cat > host-args.gn <<'EOF'
 is_clang = true
 is_debug = false
@@ -218,7 +224,6 @@ v8_enable_temporal_support = false
 v8_enable_sandbox = false
 v8_enable_pointer_compression = false
 cppgc_enable_caged_heap = false
-use_custom_libcxx = false
 treat_warnings_as_errors = false
 EOF
 RUN gn gen out/host --args="$(cat host-args.gn)" && \
@@ -290,16 +295,20 @@ FROM base AS host-skia-build
 USER root
 RUN apt-get update && apt-get install -y \
       libfreetype-dev libpng-dev libjpeg62-turbo-dev libwebp-dev \
-      zlib1g-dev clang && \
+      zlib1g-dev clang libc++-dev libc++abi-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=skia-src /skia/src /skia/src
 WORKDIR /skia/src
+# Build with clang + libc++ to match host V8 (which uses its bundled libc++),
+# so the nx.js harness can link V8 + Skia in one consistent libc++ world.
 RUN cat > host-args.gn <<'EOF'
 is_official_build = true
 is_debug = false
 cc = "clang"
 cxx = "clang++"
+extra_cflags_cc = [ "-stdlib=libc++" ]
+extra_ldflags = [ "-stdlib=libc++" ]
 skia_use_freetype = true
 skia_use_system_freetype2 = true
 skia_use_fontconfig = false
