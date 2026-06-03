@@ -197,7 +197,7 @@ FROM base AS host-v8-build
 # std::__1 ABI, matching Skia and the nx.js harness). The actual compiler is V8's
 # bundled clang (third_party/llvm-build) which supports all the flags GN emits.
 RUN apt-get update && apt-get install -y \
-      libc++-16-dev libc++abi-16-dev lld-16 && \
+      libc++-16-dev libc++abi-16-dev lld-16 libglib2.0-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=v8-src /opt/depot_tools /opt/depot_tools
