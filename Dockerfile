@@ -231,16 +231,25 @@ treat_warnings_as_errors = false
 use_sysroot = false
 EOF
 RUN gn gen out/host --args="$(cat host-args.gn)" && \
-    ninja -C out/host v8_monolith && \
+    ninja -d keeprsp -C out/host v8_monolith && \
     mkdir -p /opt/host/v8/lib /opt/host/v8/include && \
     cd out/host && \
-    # GN/ninja emit THIN archives (!<thin>) that reference .o files by relative
-    # path. Those paths don't survive the copy into /opt/host, so re-archive
-    # each as a regular (fat) archive containing the actual objects. Extract
-    # via `ar x` into a temp dir, then re-create as a fat archive.
-    fatten() { local out="$1" thin="$2" tmp; tmp=$(mktemp -d); (cd "$tmp" && ar x "$OLDPWD/$thin"); find "$tmp" -name '*.o' -print0 | xargs -0 ar qcS "$out"; ranlib "$out"; rm -rf "$tmp"; }; \
+    # GN/ninja emit THIN archives (!<thin>) referencing .o by path relative to
+    # out/host. GNU ar 2.40 thin archives can't be listed/extracted from another
+    # cwd, and `ar x` refuses thin archives outright — so neither `ar t` nor
+    # `ar x` repacking works. Instead, build a fat archive directly from the
+    # ALINK RESPONSE FILE that ninja wrote next to each archive
+    # (obj/<name>.a.rsp), which holds the exact object paths (real files,
+    # relative to out/host). This is robust and path-correct.
+    fatten() { \
+      local out="$1" thin="$2" rsp="${2}.rsp"; \
+      rm -f "$out"; \
+      if [ -f "$rsp" ]; then ar qcsD "$out" $(cat "$rsp"); \
+      else echo "ERROR: no rspfile $rsp" >&2; exit 1; fi; \
+      [ "$(head -c7 "$out")" = "!<arch>" ] || { echo "ERROR: $out is not a fat archive" >&2; exit 1; }; \
+    }; \
     fatten /opt/host/v8/lib/libv8_monolith.a obj/libv8_monolith.a && \
-    ( ar qc /opt/host/v8/lib/libabsl.a $(find obj/third_party/abseil-cpp -name '*.o') && ranlib /opt/host/v8/lib/libabsl.a ) && \
+    ( ar qcsD /opt/host/v8/lib/libabsl.a $(find obj/third_party/abseil-cpp -name '*.o') ) && \
     fatten /opt/host/v8/lib/libchrome_zlib.a obj/third_party/zlib/libchrome_zlib.a && \
     fatten /opt/host/v8/lib/libcompression_utils_portable.a obj/third_party/zlib/google/libcompression_utils_portable.a && \
     cd /v8/v8 && cp -r include/* /opt/host/v8/include/
