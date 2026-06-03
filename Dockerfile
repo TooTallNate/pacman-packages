@@ -202,7 +202,11 @@ FROM base AS host-v8-build
 # SAME __1 ABI. clang-16 is new enough for V8 m15's C++20 needs.
 RUN apt-get update && apt-get install -y \
       clang-16 libc++-16-dev libc++abi-16-dev lld-16 && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    # V8's GN build derives the clang resource dir from its own expected clang
+    # version (23 for V8 15.x), but the distro clang-16 ships resources under
+    # clang/16.0.6. Symlink so ninja can find libclang_rt.builtins.a.
+    ln -s "$(clang-16 -print-resource-dir)" /usr/lib/llvm-16/lib/clang/23
 
 COPY --from=v8-src /opt/depot_tools /opt/depot_tools
 ENV PATH="/opt/depot_tools:${PATH}"
