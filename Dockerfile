@@ -236,9 +236,9 @@ RUN gn gen out/host --args="$(cat host-args.gn)" && \
     cd out/host && \
     # GN/ninja emit THIN archives (!<thin>) that reference .o files by relative
     # path. Those paths don't survive the copy into /opt/host, so re-archive
-    # each as a regular (fat) archive containing the actual objects. `ar t`
-    # lists the member paths (relative to this out/host dir) for the thin ones.
-    fatten() { local out="$1" thin="$2"; ar qc "$out" $(ar t "$thin"); ranlib "$out"; }; \
+    # each as a regular (fat) archive containing the actual objects. Extract
+    # via `ar x` into a temp dir, then re-create as a fat archive.
+    fatten() { local out="$1" thin="$2" tmp; tmp=$(mktemp -d); (cd "$tmp" && ar x "$OLDPWD/$thin"); find "$tmp" -name '*.o' -print0 | xargs -0 ar qcS "$out"; ranlib "$out"; rm -rf "$tmp"; }; \
     fatten /opt/host/v8/lib/libv8_monolith.a obj/libv8_monolith.a && \
     ( ar qc /opt/host/v8/lib/libabsl.a $(find obj/third_party/abseil-cpp -name '*.o') && ranlib /opt/host/v8/lib/libabsl.a ) && \
     fatten /opt/host/v8/lib/libchrome_zlib.a obj/third_party/zlib/libchrome_zlib.a && \
