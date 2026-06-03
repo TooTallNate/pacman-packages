@@ -183,6 +183,54 @@ ENV V8_SRC=/v8/v8
 RUN dkp-makepkg
 
 # ---------------------------------------------------------------------------
+# host-v8-build: build a HOST-native (Linux glibc) V8 monolith from the same
+# pinned v8-src checkout. This is for the nx.js conformance test harness, which
+# recompiles source/*.cc against host libraries (libnx stubbed) and must link a
+# host-ABI V8 — the switch-v8 package is target_os=horizon and cannot link into
+# a Linux ELF. The embedder-critical flags MUST match the Switch build so the
+# same source compiles unchanged: monolithic, static, no pointer compression,
+# no sandbox, no i18n/temporal, system libstdc++.
+# ---------------------------------------------------------------------------
+FROM base AS host-v8-build
+
+COPY --from=v8-src /opt/depot_tools /opt/depot_tools
+ENV PATH="/opt/depot_tools:${PATH}"
+ENV DEPOT_TOOLS_UPDATE=0
+RUN echo "." > /opt/depot_tools/python3_bin_reldir.txt && \
+    ln -sf /usr/bin/python3 /opt/depot_tools/python3
+
+COPY --from=v8-src /v8/v8 /v8/v8
+WORKDIR /v8/v8
+# Host build uses V8's bundled Clang + the default linux toolchain. No Horizon
+# patches/toolchain. v8_use_host_cpu_arm_features can stay default here: the
+# binary runs on the same host it's built on, so there's no snapshot/CPU
+# mismatch (unlike the Switch cross-compile).
+RUN cat > host-args.gn <<'EOF'
+is_clang = true
+is_debug = false
+symbol_level = 1
+enable_rust = false
+v8_monolithic = true
+v8_static_library = true
+v8_use_external_startup_data = false
+v8_enable_i18n_support = false
+v8_enable_temporal_support = false
+v8_enable_sandbox = false
+v8_enable_pointer_compression = false
+cppgc_enable_caged_heap = false
+use_custom_libcxx = false
+treat_warnings_as_errors = false
+EOF
+RUN gn gen out/host --args="$(cat host-args.gn)" && \
+    ninja -C out/host v8_monolith && \
+    mkdir -p /opt/host/v8/lib /opt/host/v8/include && \
+    cp out/host/obj/libv8_monolith.a /opt/host/v8/lib/ && \
+    ( ar qc /opt/host/v8/lib/libabsl.a $(find out/host/obj/third_party/abseil-cpp -name '*.o') && ranlib /opt/host/v8/lib/libabsl.a ) && \
+    cp out/host/obj/third_party/zlib/libchrome_zlib.a /opt/host/v8/lib/ && \
+    cp out/host/obj/third_party/zlib/google/libcompression_utils_portable.a /opt/host/v8/lib/ && \
+    cp -r include/* /opt/host/v8/include/
+
+# ---------------------------------------------------------------------------
 # skia-src: pinned Skia checkout + git-sync-deps + bundled gn/ninja. Like
 # v8-src: expensive, rarely changes, isolated for cache reuse. Bump SKIA_VER.
 # ---------------------------------------------------------------------------
@@ -230,6 +278,83 @@ COPY --chown=user switch/skia/ /packages/skia/
 RUN dkp-makepkg
 
 # ---------------------------------------------------------------------------
+# host-skia-build: build a HOST-native (Linux glibc) raster Skia from the same
+# pinned skia-src checkout, for the nx.js conformance harness (which links a
+# host-ABI Skia; the switch-skia package is a horizon/aarch64-none-elf build).
+# Raster only (no Ganesh/GL/EGL) — the harness stubs libnx and never runs the
+# GPU screen path. Config mirrors switch-skia's CPU variant (freetype +
+# bundled harfbuzz + libgrapheme, no icu/fontconfig, wuffs for GIF).
+# ---------------------------------------------------------------------------
+FROM base AS host-skia-build
+
+USER root
+RUN apt-get update && apt-get install -y \
+      libfreetype-dev libpng-dev libjpeg-turbo8-dev libwebp-dev \
+      zlib1g-dev clang && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=skia-src /skia/src /skia/src
+WORKDIR /skia/src
+RUN cat > host-args.gn <<'EOF'
+is_official_build = true
+is_debug = false
+cc = "clang"
+cxx = "clang++"
+skia_use_freetype = true
+skia_use_system_freetype2 = true
+skia_use_fontconfig = false
+skia_use_harfbuzz = true
+skia_use_system_harfbuzz = false
+skia_use_icu = false
+skia_use_libgrapheme = true
+skia_enable_skshaper = true
+skia_enable_skunicode = true
+skia_enable_fontmgr_custom_empty = true
+skia_use_libjpeg_turbo_decode = true
+skia_use_libjpeg_turbo_encode = true
+skia_use_libpng_decode = true
+skia_use_libpng_encode = true
+skia_use_libwebp_decode = true
+skia_use_libwebp_encode = false
+skia_use_wuffs = true
+skia_use_zlib = true
+skia_use_expat = false
+skia_enable_ganesh = false
+skia_use_gl = false
+skia_use_vulkan = false
+skia_use_egl = false
+EOF
+RUN python3 bin/fetch-gn && python3 bin/fetch-ninja && \
+    bin/gn gen out/host --args="$(cat host-args.gn)" && \
+    third_party/ninja/ninja -C out/host skia skshaper skunicode_core skunicode_libgrapheme && \
+    mkdir -p /opt/host/skia/lib && \
+    cp out/host/libskia.a out/host/libsk*.a /opt/host/skia/lib/ 2>/dev/null; \
+    cp -r /skia/src/include /opt/host/skia/include && \
+    cp -r /skia/src/modules /opt/host/skia/modules 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# host-libuv-build: build a HOST-native (Linux glibc) libuv from the SAME
+# pinned version as switch-libuv (1.52.1), for the nx.js conformance harness.
+# Built exact-from-source (not apt) to stay version-locked with the runtime.
+# The host build is vanilla upstream CMake — the horizon port patch is NOT
+# applied (that's Switch-only).
+# ---------------------------------------------------------------------------
+FROM base AS host-libuv-build
+
+ARG LIBUV_VER=1.52.1
+RUN apt-get update && apt-get install -y cmake clang && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /libuv
+RUN curl -sfLS "https://dist.libuv.org/dist/v${LIBUV_VER}/libuv-v${LIBUV_VER}.tar.gz" \
+      | tar xz --strip-components=1 && \
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+          -DLIBUV_BUILD_TESTS=OFF -DLIBUV_BUILD_BENCH=OFF && \
+    cmake --build build -j"$(nproc)" && \
+    mkdir -p /opt/host/libuv/lib /opt/host/libuv/include && \
+    cp build/libuv*.a /opt/host/libuv/lib/ && \
+    cp -r include/* /opt/host/libuv/include/
+
+# ---------------------------------------------------------------------------
 # runtime: the FINAL, slim image. Starts from `base` (toolchain + helpers, no
 # source / no depot_tools / no build artifacts) and installs ONLY the built
 # package files. The multi-GB V8 source tree and intermediate build outputs in
@@ -265,5 +390,19 @@ RUN dkp-pacman -U --noconfirm \
       /packages/ada/*.pkg.tar.zst \
       /packages/v8/*.pkg.tar.zst \
       /packages/skia/*.pkg.tar.zst
+
+# Host-native (Linux glibc) V8 + Skia + libuv for the nx.js conformance test
+# harness, which recompiles source/*.cc against host libraries (libnx stubbed).
+# These live under /opt/host and are NOT the Switch portlibs. V8, Skia, and
+# libuv are built exact-from-source (version-locked with the Switch packages);
+# only the leaf codecs + mbedtls come from apt. See nx.js packages/runtime/test.
+COPY --from=host-v8-build    /opt/host/v8    /opt/host/v8
+COPY --from=host-skia-build  /opt/host/skia  /opt/host/skia
+COPY --from=host-libuv-build /opt/host/libuv /opt/host/libuv
+RUN apt-get update && apt-get install -y \
+      libmbedtls-dev \
+      libfreetype-dev libharfbuzz-dev libpng-dev libjpeg-turbo8-dev \
+      libwebp-dev zlib1g-dev libzstd-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
