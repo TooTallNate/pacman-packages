@@ -233,11 +233,17 @@ EOF
 RUN gn gen out/host --args="$(cat host-args.gn)" && \
     ninja -C out/host v8_monolith && \
     mkdir -p /opt/host/v8/lib /opt/host/v8/include && \
-    cp out/host/obj/libv8_monolith.a /opt/host/v8/lib/ && \
-    ( ar qc /opt/host/v8/lib/libabsl.a $(find out/host/obj/third_party/abseil-cpp -name '*.o') && ranlib /opt/host/v8/lib/libabsl.a ) && \
-    cp out/host/obj/third_party/zlib/libchrome_zlib.a /opt/host/v8/lib/ && \
-    cp out/host/obj/third_party/zlib/google/libcompression_utils_portable.a /opt/host/v8/lib/ && \
-    cp -r include/* /opt/host/v8/include/
+    cd out/host && \
+    # GN/ninja emit THIN archives (!<thin>) that reference .o files by relative
+    # path. Those paths don't survive the copy into /opt/host, so re-archive
+    # each as a regular (fat) archive containing the actual objects. `ar t`
+    # lists the member paths (relative to this out/host dir) for the thin ones.
+    fatten() { local out="$1" thin="$2"; ar qc "$out" $(ar t "$thin"); ranlib "$out"; }; \
+    fatten /opt/host/v8/lib/libv8_monolith.a obj/libv8_monolith.a && \
+    ( ar qc /opt/host/v8/lib/libabsl.a $(find obj/third_party/abseil-cpp -name '*.o') && ranlib /opt/host/v8/lib/libabsl.a ) && \
+    fatten /opt/host/v8/lib/libchrome_zlib.a obj/third_party/zlib/libchrome_zlib.a && \
+    fatten /opt/host/v8/lib/libcompression_utils_portable.a obj/third_party/zlib/google/libcompression_utils_portable.a && \
+    cd /v8/v8 && cp -r include/* /opt/host/v8/include/
 
 # ---------------------------------------------------------------------------
 # skia-src: pinned Skia checkout + git-sync-deps + bundled gn/ninja. Like
