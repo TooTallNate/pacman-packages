@@ -193,11 +193,11 @@ RUN dkp-makepkg
 # ---------------------------------------------------------------------------
 FROM base AS host-v8-build
 
-# Install stock libc++ headers/libs for use_custom_libcxx=false (keeps V8 on the
-# std::__1 ABI, matching Skia and the nx.js harness). The actual compiler is V8's
-# bundled clang (third_party/llvm-build) which supports all the flags GN emits.
+# V8, Skia, and the nx.js harness all use the system libstdc++ (g++ 12) for a
+# single consistent C++ ABI. V8's bundled clang builds against libstdc++ by
+# default on Linux (use_custom_libcxx=false), so no -stdlib flag is needed here.
 RUN apt-get update && apt-get install -y \
-      libc++-16-dev libc++abi-16-dev lld-16 libglib2.0-dev && \
+      lld-16 libglib2.0-dev && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=v8-src /opt/depot_tools /opt/depot_tools
@@ -208,9 +208,10 @@ RUN echo "." > /opt/depot_tools/python3_bin_reldir.txt && \
 
 COPY --from=v8-src /v8/v8 /v8/v8
 WORKDIR /v8/v8
-# V8's bundled clang (third_party/llvm-build) supports all the flags GN emits.
-# use_custom_libcxx=false so V8 links against the stock libc++ (std::__1 ABI),
-# matching Skia and the nx.js harness. No Horizon patches/toolchain (host build).
+# V8's bundled clang builds against the system libstdc++ by default on Linux
+# (use_custom_libcxx=false, no -stdlib flag), giving std::shared_ptr with no
+# inline namespace — the same ABI as Skia (built with libstdc++ below) and the
+# harness. use_sysroot=false so the build uses the host's libstdc++ headers.
 RUN cat > host-args.gn <<'EOF'
 is_clang = true
 clang_use_chrome_plugins = false
@@ -298,20 +299,20 @@ FROM base AS host-skia-build
 USER root
 RUN apt-get update && apt-get install -y \
       libfreetype-dev libpng-dev libjpeg62-turbo-dev libwebp-dev \
-      zlib1g-dev clang libc++-dev libc++abi-dev && \
+      zlib1g-dev clang && \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=skia-src /skia/src /skia/src
 WORKDIR /skia/src
-# Build with clang + libc++ to match host V8 (which uses its bundled libc++),
-# so the nx.js harness can link V8 + Skia in one consistent libc++ world.
+# Build with clang against the system libstdc++ (the default; no -stdlib=libc++),
+# matching host V8 and the nx.js harness so all three share one std:: ABI
+# (std::shared_ptr, no inline namespace). g++ 12's libstdc++ has the C++20
+# features Skia m149 needs.
 RUN cat > host-args.gn <<'EOF'
 is_official_build = true
 is_debug = false
 cc = "clang"
 cxx = "clang++"
-extra_cflags_cc = [ "-stdlib=libc++" ]
-extra_ldflags = [ "-stdlib=libc++" ]
 skia_use_freetype = true
 skia_use_system_freetype2 = true
 skia_use_fontconfig = false
