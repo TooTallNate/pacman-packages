@@ -193,25 +193,12 @@ RUN dkp-makepkg
 # ---------------------------------------------------------------------------
 FROM base AS host-v8-build
 
-# Use the distro clang-16 + its stock libc++ (NOT V8's bundled libc++). V8's
-# bundled libc++ is configured with _LIBCPP_ABI_NAMESPACE=__Cr (Chromium's
-# private ABI namespace) — symbols become std::__Cr::*. Skia and the nx.js
-# harness use the stock libc++ (std::__1::*), so a __Cr V8 cannot link against
-# them (undefined refs for any V8 API taking std:: types). Building V8 with
-# use_custom_libcxx=false against clang-16's stock libc++ keeps all three on the
-# SAME __1 ABI. clang-16 is new enough for V8 m15's C++20 needs.
+# Install stock libc++ headers/libs for use_custom_libcxx=false (keeps V8 on the
+# std::__1 ABI, matching Skia and the nx.js harness). The actual compiler is V8's
+# bundled clang (third_party/llvm-build) which supports all the flags GN emits.
 RUN apt-get update && apt-get install -y \
-      clang-16 libc++-16-dev libc++abi-16-dev lld-16 && \
-    rm -rf /var/lib/apt/lists/* && \
-    # V8's GN build derives the clang resource dir from its own expected clang
-    # version (23 for V8 15.x), but the distro clang-16 ships resources under
-    # clang/16.0.6. Symlink so ninja can find libclang_rt.builtins.a.
-    ln -s "$(clang-16 -print-resource-dir)" /usr/lib/llvm-16/lib/clang/23 && \
-    # V8 also expects the newer per-triple layout (lib/<triple>/libclang_rt.builtins.a)
-    # but clang-16 uses the old layout (lib/linux/libclang_rt.builtins-<arch>.a).
-    mkdir -p /usr/lib/llvm-16/lib/clang/23/lib/x86_64-unknown-linux-gnu && \
-    ln -sf "$(clang-16 -print-resource-dir)/lib/linux/libclang_rt.builtins-x86_64.a" \
-           /usr/lib/llvm-16/lib/clang/23/lib/x86_64-unknown-linux-gnu/libclang_rt.builtins.a
+      libc++-16-dev libc++abi-16-dev lld-16 && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=v8-src /opt/depot_tools /opt/depot_tools
 ENV PATH="/opt/depot_tools:${PATH}"
@@ -221,13 +208,11 @@ RUN echo "." > /opt/depot_tools/python3_bin_reldir.txt && \
 
 COPY --from=v8-src /v8/v8 /v8/v8
 WORKDIR /v8/v8
-# use_custom_libcxx=false + clang_base_path pointing at the distro clang-16 so
-# V8 uses the stock libc++ (std::__1) shared with Skia and the harness. No
-# Horizon patches/toolchain (host build). v8_use_host_cpu_arm_features is
-# irrelevant on the x64 CI host.
+# V8's bundled clang (third_party/llvm-build) supports all the flags GN emits.
+# use_custom_libcxx=false so V8 links against the stock libc++ (std::__1 ABI),
+# matching Skia and the nx.js harness. No Horizon patches/toolchain (host build).
 RUN cat > host-args.gn <<'EOF'
 is_clang = true
-clang_base_path = "/usr/lib/llvm-16"
 clang_use_chrome_plugins = false
 use_custom_libcxx = false
 is_debug = false
