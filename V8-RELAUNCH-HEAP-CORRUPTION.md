@@ -1,10 +1,43 @@
 # switch-v8: clean exit corrupts the hbloader heap → next homebrew launch crashes
 
-**Owner:** switch-v8 package (`horizon-src/mman-horizon.cc`)
-**Severity:** Blocker for relaunching any homebrew after an nx.js/V8 app
-**Status:** Candidate fix in switch-v8 15.0.243-5 — needs hardware verification.
+**Owner:** ~~switch-v8 package~~ → **embedder + libuv self-pipe** (see RESOLUTION)
+**Severity:** Blocker for relaunching homebrew after a socket-using V8 app
+**Status:** RESOLVED — the real cause was a libuv self-pipe leak on the embedder
+side, NOT the V8 mman arena. Fixed in nx.js by calling `uv_library_shutdown()`
+before `socketExit()`.
 
-## Candidate fix (15.0.243-5): two-phase teardown + cache flush
+## RESOLUTION (the actual root cause)
+
+This report's mman-arena hypothesis was a **red herring**. The real cause:
+
+libuv's async/signal self-wakeup "pipe" is a **loopback-TCP socket pair** on
+Horizon (libnx has no anonymous pipes; switch-libuv's `horizon-port.c` emulates
+`pipe()` with a socket pair). Those self-pipe fds are closed by
+`uv_library_shutdown()`. The switch-libuv port deliberately disables the
+`__attribute__((destructor))` that would call it at libc teardown (it runs
+*after* `socketExit()` and faults), and **requires the embedder to call
+`uv_library_shutdown()` explicitly while the socket layer is still up**.
+
+nx.js wasn't doing that, so the self-pipe bsd sockets leaked and `socketExit()`
+tore down the `bsdsocket` sysmodule with live sessions → it faulted on the NEXT
+launch (the `bsdsocket + 0xe7064` User Break), and the dangling state also
+showed up as the hbmenu malloc fault. Only socket-using apps create the
+self-pipe (via the async watcher / threadpool), which is why a non-socket
+hello-world relaunched fine.
+
+Fix (nx.js `main.cc`): call `uv_library_shutdown()` immediately before
+`plExit`/`romfsExit`/`socketExit`. Verified across multiple relaunches on
+hardware. See the nx.js commit `e0244c5`.
+
+> The switch-v8 15.0.243-5 mman teardown change (below) was made while chasing
+> this and is KEPT as defensive teardown hygiene (it doesn't hurt), but it is
+> NOT what fixed the crash.
+
+---
+
+## Original mman-arena investigation (red herring — kept for the record)
+
+### Two-phase teardown + cache flush (switch-v8 15.0.243-5, defensive only)
 
 Key facts established while investigating:
 - The slab `src` blocks are `memalign`'d from the **shared hbloader heap**, and

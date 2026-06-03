@@ -343,20 +343,24 @@ class Arena {
   // .nro returns to hbloader/hbmenu: libnx's exit does NOT unmap manual
   // svcMapMemory regions, so leaked aliases corrupt the next process.
   //
-  // CRITICAL ordering (fixes hbloader heap corruption on relaunch): the slab
-  // `src` blocks are memalign'd from the SHARED hbloader heap, and that heap
-  // PERSISTS across NRO launches (hbloader pre-allocates it via svcSetHeapSize
-  // and passes it to every child via the homebrew env). While a src block is
-  // svcMapMemory-aliased it is MemType_WeirdMappedMem; freeing one src back into
-  // newlib's allocator while an adjacent src is still aliased makes newlib's
-  // free-list coalescing read a "weird-mapped" neighbor and corrupt the list —
-  // which the NEXT process inherits (it crashes in malloc, not us). So do this
-  // in two strict phases:
-  //   1. svcUnmapMemory EVERY slab first (fully restore all src ranges to normal
-  //      heap state). Flush D-cache on the arena alias first for coherency,
-  //      since V8 wrote through the dst alias.
-  //   2. Only AFTER all are unmapped, free() the src blocks (now every neighbor
-  //      a coalesce might touch is back to normal heap memory).
+  // Defensive two-phase teardown. The slab `src` blocks are memalign'd from the
+  // SHARED hbloader heap, which PERSISTS across NRO launches (hbloader
+  // pre-allocates it via svcSetHeapSize and hands the same region to every child
+  // via the homebrew env). While a src block is svcMapMemory-aliased it is
+  // MemType_WeirdMappedMem; freeing one src back into newlib's allocator while an
+  // adjacent src is still aliased could let newlib's free-list coalescing touch a
+  // still-"weird-mapped" neighbor. So:
+  //   1. svcUnmapMemory EVERY slab first (restore all src ranges to normal heap),
+  //      flushing the D-cache on each arena alias first since V8 wrote through
+  //      the dst alias (the aliases are not guaranteed cache-coherent).
+  //   2. Only AFTER all are unmapped, free() the src blocks — no coalesce can
+  //      then touch a still-mapped neighbor.
+  // NB: this is teardown hygiene, not a known-bug fix. The "2nd-launch crash"
+  // some consumers hit was a SEPARATE, libuv-side issue (the async/signal
+  // self-pipe is a loopback-TCP socket pair on Horizon; the embedder must call
+  // uv_library_shutdown() before socketExit() or those bsd sockets leak and the
+  // bsdsocket sysmodule faults on the next launch) — fixed on the embedder side,
+  // not here.
   void Teardown() {
     if (base_ == 0) return;
     // Phase 1: unmap all aliases.
