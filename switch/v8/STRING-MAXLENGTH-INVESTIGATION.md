@@ -1,5 +1,40 @@
 # `v8_lower_limits_mode` caps `String::kMaxLength` at 1 MiB → JS bundles >1 MiB crash
 
+## STATUS: FIXED in switch-v8 15.0.243-6 (rebuilt + verified)
+
+Implemented the recommended **Option 1** (decouple `String::kMaxLength` from
+`V8_LOWER_LIMITS_MODE`):
+
+- Added patch
+  **`patches/0007-v8-string-maxlength-decouple-horizon.patch`** — removes the
+  `#ifdef V8_LOWER_LIMITS_MODE` branch in `include/v8-primitive.h` so
+  `kMaxLength` always uses the normal `(1<<29)-24` (~512 MB) value. This also
+  eliminates the public-ABI define mismatch (consumers compiling without the
+  define now agree with the library), and the internal
+  `src/objects/string.h:kMaxLength` derives from it automatically.
+- Wired into `PKGBUILD` `prepare()` (applied against `$srcdir/v8`, idempotent
+  via the existing `git apply --reverse --check` guard); `pkgrel` bumped to 6.
+
+**Rebuilt and verified on `15.0.243`:**
+- Both monoliths rebuilt clean: `out/switch-jit` (full JIT, ~110 MB) and
+  `out/switch` (jitless). **No `string.h` `static_assert` failures** — the
+  non-lower value is self-consistent with sandbox/pointer-compression off
+  (`kMaxLength*2 + kHeaderSize` ≈ 1.07 GB < `kMaxInt` 2^31-1), as predicted.
+- Shipped `include/v8-primitive.h` now reports `kMaxLength = (1<<29)-24`
+  unconditionally; the `1 << 20` cap is gone.
+- The JSDispatchTable (16 MB) / FixedArray reductions in `globals.h` /
+  `fixed-array.h` are untouched, so `Isolate::New` memory behavior is unchanged.
+
+**Still to do (hardware):** confirm a multi-MiB JS bundle (e.g. the
+`switch-nsp-forwarder` ~1.97 MiB React bundle, or a synthetic ~2–4 MiB module)
+compiles + runs on device, and that `Isolate::New` still succeeds.
+
+> Build-tree note: the working checkout under `/var/folders/.../opencode/v8build`
+> had been partially reclaimed by the OS temp-dir cleaner (lost `.gn`/`DEPS`/
+> `BUILD.gn`/`.git`); it was re-fetched (`fetch v8` + tag `15.0.243` +
+> `gclient sync`) and all 7 patches re-applied before the rebuild above. Move
+> the checkout out of the temp dir to avoid repeat GC.
+
 ## TL;DR
 
 The `switch-v8` portlib is built with the GN arg **`v8_lower_limits_mode = true`**

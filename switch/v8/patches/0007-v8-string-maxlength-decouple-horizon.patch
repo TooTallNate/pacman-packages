@@ -1,0 +1,46 @@
+From: switch-v8 horizon port
+Subject: [PATCH] Decouple String::kMaxLength from V8_LOWER_LIMITS_MODE
+
+v8_lower_limits_mode=true is required on Horizon for the 16 MB
+JSDispatchTable reservation (256 MB otherwise fails Isolate::New). But the
+same gate also lowers v8::String::kMaxLength to 1 MiB, which caps the size of
+any JS source string and makes JS bundles >1 MiB impossible to compile
+(observed: a ~1.97 MiB React bundle aborts in ToLocalChecked / "Empty
+MaybeLocal").
+
+The string limit and the dispatch-table reservation are independent in V8's
+logic; they only share the V8_LOWER_LIMITS_MODE macro. Decouple them by
+giving kMaxLength the normal (non-lower) value in both modes. The internal
+src/objects/string.h:kMaxLength derives from this public constant, and the
+neighboring static_asserts (kMaxLength*2 + kHeaderSize <= kSmiMaxValue/kMaxInt)
+hold for the non-lower 64-bit value ((1<<29)-24), so this is self-consistent.
+
+This also removes the public-ABI define mismatch: consumers that compile
+without V8_LOWER_LIMITS_MODE now see the same kMaxLength the library enforces.
+
+The JSDispatchTable / FixedArray reductions in src/common/globals.h and
+src/objects/fixed-array.h are intentionally left untouched.
+---
+ include/v8-primitive.h | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/include/v8-primitive.h b/include/v8-primitive.h
+index 1111111..2222222 100644
+--- a/include/v8-primitive.h
++++ b/include/v8-primitive.h
+@@ -125,11 +125,11 @@
+ class V8_EXPORT String : public Name {
+  public:
+-#ifndef V8_LOWER_LIMITS_MODE
++  // Horizon (switch-v8): keep the full string length even under
++  // V8_LOWER_LIMITS_MODE so JS bundles >1 MiB can be compiled. Only the
++  // JSDispatchTable/FixedArray reductions of lower-limits mode are desired;
++  // the 1 MiB string cap is not. See STRING-MAXLENGTH-INVESTIGATION.md.
+   static constexpr int kMaxLength =
+       internal::kApiSystemPointerSize == 4 ? (1 << 28) - 16 : (1 << 29) - 24;
+-#else
+-  static constexpr int kMaxLength = 1 << 20;
+-#endif  // V8_LOWER_LIMITS_MODE
+ 
+   enum Encoding {
+     UNKNOWN_ENCODING = 0x1,
