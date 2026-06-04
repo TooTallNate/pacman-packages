@@ -384,6 +384,30 @@ RUN curl -sfLS "https://dist.libuv.org/dist/v${LIBUV_VER}/libuv-v${LIBUV_VER}.ta
     cp -r include/* /opt/host/libuv/include/
 
 # ---------------------------------------------------------------------------
+# host-ada-build: build a HOST-native (Linux glibc) Ada static lib from the
+# SAME pinned version as switch-ada (3.4.4), for the nx.js conformance harness.
+# Built from Ada's official single-header amalgamation release assets (the same
+# files switch-ada packages) with the same ABI flags the harness uses
+# (-fno-exceptions -fno-rtti, libstdc++) so it links cleanly alongside the host
+# V8/Skia archives.
+# ---------------------------------------------------------------------------
+FROM base AS host-ada-build
+
+ARG ADA_VER=3.4.4
+RUN apt-get update && apt-get install -y clang binutils && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /ada
+RUN _base="https://github.com/ada-url/ada/releases/download/v${ADA_VER}" && \
+    curl -sfLS "${_base}/ada.cpp"   -o ada.cpp && \
+    curl -sfLS "${_base}/ada.h"     -o ada.h && \
+    curl -sfLS "${_base}/ada_c.h"   -o ada_c.h && \
+    clang++ -std=c++20 -O2 -fno-exceptions -fno-rtti -fPIC -c ada.cpp -o ada.o && \
+    ar rcs libada.a ada.o && \
+    mkdir -p /opt/host/ada/lib /opt/host/ada/include && \
+    cp libada.a /opt/host/ada/lib/ && \
+    cp ada.h ada_c.h /opt/host/ada/include/
+
+# ---------------------------------------------------------------------------
 # runtime: the FINAL, slim image. Starts from `base` (toolchain + helpers, no
 # source / no depot_tools / no build artifacts) and installs ONLY the built
 # package files. The multi-GB V8 source tree and intermediate build outputs in
@@ -428,6 +452,7 @@ RUN dkp-pacman -U --noconfirm \
 COPY --from=host-v8-build    /opt/host/v8    /opt/host/v8
 COPY --from=host-skia-build  /opt/host/skia  /opt/host/skia
 COPY --from=host-libuv-build /opt/host/libuv /opt/host/libuv
+COPY --from=host-ada-build   /opt/host/ada   /opt/host/ada
 RUN apt-get update && apt-get install -y \
       libmbedtls-dev \
       libfreetype-dev libharfbuzz-dev libpng-dev libjpeg62-turbo-dev \
