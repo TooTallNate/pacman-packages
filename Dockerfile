@@ -431,7 +431,20 @@ COPY --from=host-libuv-build /opt/host/libuv /opt/host/libuv
 RUN apt-get update && apt-get install -y \
       libmbedtls-dev \
       libfreetype-dev libharfbuzz-dev libpng-dev libjpeg62-turbo-dev \
-      libwebp-dev zlib1g-dev libzstd-dev && \
+      libwebp-dev zlib1g-dev libzstd-dev \
+      cmake pkg-config lsb-release wget software-properties-common gnupg && \
+    rm -rf /var/lib/apt/lists/*
+
+# LLVM 19 toolchain for linking the conformance harness. The host V8/Skia
+# archives are produced by a modern Clang that emits CREL relocations; only
+# LLVM >= 18 can link them (lld-16 leaves .init_array unrelocated and the
+# binary segfaults in call_init before main()). Ship clang-19/lld-19 so CI
+# does not have to fetch it on every run.
+RUN wget -q https://apt.llvm.org/llvm.sh -O /tmp/llvm.sh && \
+    chmod +x /tmp/llvm.sh && \
+    /tmp/llvm.sh 19 && \
+    ln -sf /usr/bin/ld.lld-19 /usr/bin/ld.lld && \
+    rm -f /tmp/llvm.sh && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /
