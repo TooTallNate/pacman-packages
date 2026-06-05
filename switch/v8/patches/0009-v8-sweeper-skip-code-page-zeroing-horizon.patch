@@ -1,0 +1,42 @@
+From: switch-v8 horizon port
+Subject: [PATCH] Skip Sweeper free-space zeroing on executable (code) pages (Horizon W^X)
+
+After patch 0008 fixed the marking-barrier code-page flag writes, a second
+W^X fault surfaced at higher heap pressure: Sweeper::ZeroOrDiscardUnusedMemory
+memset()s freed regions to zero "to help with OS page compression". For an
+executable (code-space) NormalPage that memory is the libnx jit_* code arena's
+read-only rx alias, so the memset Data-Aborts (observed: PC in memset, LR in
+Sweeper::ZeroOrDiscardUnusedMemory, fault address inside the code arena).
+
+V8 guards this with RwxMemoryWriteScope when page->is_executable(), but that
+scope is a no-op on Horizon (we cannot re-protect these aliases; code writes go
+through the rw alias instead, see patch 0003). The zeroing/discard is purely an
+OS-page-compression optimization (v8_flags.zero_unused_memory) and is not
+load-bearing for correctness; Horizon has no OS page compression and the
+DiscardSystemPages call is already a madvise no-op in the Horizon mman. So skip
+the whole routine for executable pages on Horizon. Non-executable data pages are
+unaffected.
+diff --git a/src/heap/sweeper.cc b/src/heap/sweeper.cc
+index 0982c54e..12d6af59 100644
+--- a/src/heap/sweeper.cc
++++ b/src/heap/sweeper.cc
+@@ -1038,6 +1038,19 @@ void Sweeper::ZeroOrDiscardUnusedMemory(NormalPage* page, Address addr,
+     return;
+   }
+ 
++#if V8_OS_HORIZON
++  // Horizon W^X: executable pages live in the libnx jit_* code arena and are
++  // addressed via the read-only rx alias; the memset() zeroing below would
++  // fault (Data Abort) on that alias. The RwxMemoryWriteScope used elsewhere is
++  // a no-op on Horizon (we cannot re-protect; writes use the rw alias instead).
++  // This zeroing is purely an OS-page-compression optimization (see comments
++  // below) and Horizon has no OS page compression, so skip it entirely for
++  // executable pages. (Non-executable data pages fall through unchanged.)
++  if (page->is_executable()) {
++    return;
++  }
++#endif
++
+   const Address unused_start = addr + sizeof(FreeSpace);
+   DCHECK(page->ContainsLimit(unused_start));
+   const Address unused_end = addr + size;

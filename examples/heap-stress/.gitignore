@@ -1,0 +1,8 @@
+build/
+*.elf
+*.nro
+*.nacp
+*.map
+*.lst
+# local link prefixes assembled from switch-v8 package extractions (see README)
+.v8prefix*/

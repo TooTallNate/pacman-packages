@@ -5,20 +5,22 @@
 // newlib has no mmap. This provides just enough of the POSIX mmap surface that
 // src/base/platform/platform-posix.cc uses.
 //
-// IMPORTANT (first-bring-up semantics, jitless):
-//  * Anonymous mappings are backed by aligned heap allocations (memalign).
-//    Horizon gives the process a large heap; there is no demand paging.
-//  * mprotect is a NO-OP success: pages are always RW. Executable memory for
-//    JIT is NOT handled here; full JIT uses the libnx jit_* dual-mapping
-//    instead (see PORTING-NOTES.md blocker #4).
-//  * MAP_FIXED at an arbitrary address is NOT supported (returns MAP_FAILED).
-//    V8's address-space reservation must therefore use the non-fixed path; the
-//    Horizon PageAllocator is expected to avoid MAP_FIXED for now.
+// Implementation: mman-horizon.cc reserves a DATA arena from the STACK virtmem
+// region and commits 16 MiB slabs lazily via svcMapMemory on first
+// write-permission (see that file for the full design). Key semantics:
+//  * Anonymous PROT_NONE mappings only RESERVE address space (no backing);
+//    RW mappings / mprotect(RW) COMMIT the covering slabs on demand.
+//  * mprotect/mmap propagate commit failure: if a slab cannot be backed they
+//    return -1 / MAP_FAILED with errno=ENOMEM, so V8's PageAllocator takes its
+//    graceful commit-failure path instead of faulting on a later write into
+//    unbacked memory (see HEAP-COMMIT-INVESTIGATION.md).
+//  * Executable (JIT) memory is served from the libnx jit_* dual-mapped code
+//    arena, not here (see PORTING-NOTES.md blocker #4).
 //  * madvise / msync are NO-OP successes (advisory only).
 //
-// This is deliberately simple to get a jitless build linking and running.
-// A faithful implementation (svcMapMemory over a reserved virtmem range) is a
-// follow-up; see platform-horizon.cc.
+// The committable DATA arena is bounded by the STACK-region reservation, NOT
+// the process memory grant; horizon_mman_data_arena_size() exposes the real
+// ceiling so the embedder can size the V8 heap to fit.
 
 #ifndef V8_BASE_PLATFORM_HORIZON_SYS_MMAN_H_
 #define V8_BASE_PLATFORM_HORIZON_SYS_MMAN_H_

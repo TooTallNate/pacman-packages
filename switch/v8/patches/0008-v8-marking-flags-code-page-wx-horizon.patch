@@ -1,0 +1,72 @@
+From: switch-v8 horizon port
+Subject: [PATCH] Redirect MemoryChunk flag writes on CODE pages through the rw alias (W^X)
+
+On Horizon, executable memory is a libnx jit_* CodeMemory region with two
+aliases of the same physical pages: rx (execute, NOT writable) and rw (writable
+= rx + horizon_jit_rw_delta). V8 addresses everything via the rx alias and patch
+0003 redirects instruction-stream writes (WritableJitAllocation) to the rw
+alias.
+
+But the GC marking barrier also writes the *MemoryChunk header flags* that live
+at the start of every page: MutablePage::SetOldGenerationPageFlags ->
+RawSetTrustedAndUntrustedFlags -> `Chunk()->untrusted_main_thread_flags_ = ...`.
+For a CODE-space page that header is on the rx (read-only) alias, so the write
+faults: Data Abort @ 0x0 in SetOldGenerationPageFlags <- Activate/DeactivateSpaces
+(marking-barrier.cc), with the fault address inside the code arena. This only
+happens under full JIT (no code arena exists when jitless). Confirmed on device:
+full JIT crashed after 32 MiB while jitless reached 3110 MiB in the same regime.
+
+V8 already has a W^X-aware variant for single flags (SetFlagMaybeExecutable wraps
+the write in RwxMemoryWriteScope when is_executable()), but SetOldGenerationPageFlags
+uses the non-executable raw path. Rather than reroute all callers, fix it at the
+single write site: in RawSetTrustedAndUntrustedFlags, when the chunk is a code
+page, write untrusted_main_thread_flags_ through the rw alias (rx + delta). For
+non-code pages horizon_jit_rw_delta() returns 0, so this is a no-op.
+
+This mirrors the V8_HORIZON_JIT_WRITE redirect from patch 0003, applied to the
+in-page chunk-flags store.
+---
+ src/heap/mutable-page-inl.h | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/src/heap/mutable-page-inl.h b/src/heap/mutable-page-inl.h
+index d5e99637..479b4549 100644
+--- a/src/heap/mutable-page-inl.h
++++ b/src/heap/mutable-page-inl.h
+@@ -10,6 +10,14 @@
+ 
+ #include "src/heap/base-page-inl.h"
+ 
++#if V8_OS_HORIZON
++// Horizon W^X: the MemoryChunk header of a CODE page is on the read-only rx
++// alias; its flag writes must go through the writable rw alias = rx + delta.
++// horizon_jit_rw_delta() returns 0 for non-code addresses (no-op). See patch
++// 0003 (V8_HORIZON_JIT_WRITE) and mman-horizon.cc.
++extern "C" intptr_t horizon_jit_rw_delta(uintptr_t rx_addr);
++#endif
++
+ namespace v8::internal {
+ 
+ // static
+@@ -80,7 +88,21 @@ V8_INLINE void MutablePage::RawSetTrustedAndUntrustedFlags(
+   SBXCHECK_EQ(untrusted_main_thread_flags, trusted_main_thread_flags_);
+ #endif  // V8_ENABLE_SANDBOX
+   trusted_main_thread_flags_ = new_flags;
++#if V8_OS_HORIZON
++  // Write the in-page flags through the rw alias. For a CODE page Chunk() is on
++  // the read-only rx alias; rx + horizon_jit_rw_delta() is the writable alias.
++  // For non-code pages the delta is 0, so this is a plain store. The two code
++  // aliases map the same physical pages and are D-cache coherent, so the GC's
++  // later reads via the rx alias observe this write (no I-cache sync needed;
++  // these are data flags, not instructions).
++  MemoryChunk* chunk = Chunk();
++  auto* flags_ptr = reinterpret_cast<MemoryChunk::MainThreadFlags*>(
++      reinterpret_cast<uintptr_t>(&chunk->untrusted_main_thread_flags_) +
++      horizon_jit_rw_delta(reinterpret_cast<uintptr_t>(chunk)));
++  *flags_ptr = trusted_main_thread_flags_;
++#else
+   Chunk()->untrusted_main_thread_flags_ = trusted_main_thread_flags_;
++#endif
+ }
+ 
+ void MutablePage::SetFlagsUnlocked(MemoryChunk::MainThreadFlags flags,

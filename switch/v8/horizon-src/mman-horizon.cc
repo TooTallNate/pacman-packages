@@ -29,6 +29,7 @@
 
 #include "src/base/platform/horizon/sys/mman.h"
 
+#include <cerrno>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -248,6 +249,15 @@ class Arena {
     return a >= base_ && (a + len) <= base_ + arena_size_;
   }
 
+  // The address-space reservation actually obtained from the STACK region
+  // (first-fit over {1 GiB, 512, 256, 128, 64 MiB}). This is the hard ceiling
+  // on committable DATA memory — the V8 heap, ArrayBuffers, etc. all live here,
+  // NOT in the full process grant. Forces EnsureInit so the value is real.
+  size_t ReservedSize() {
+    if (!EnsureInit()) return 0;
+    return arena_size_;
+  }
+
   // Commit the slabs covering [addr, addr+size) on demand (lazy commit). Only
   // slabs actually touched get backed by svcMapMemory -> a PROT_NONE reservation
   // costs no committed memory. One svcMapMemory per 16 MiB slab keeps the kernel
@@ -257,6 +267,10 @@ class Arena {
     uintptr_t end = addr + size;
     size_t first = (addr - base_) / kSlab;
     size_t last = (end - 1 - base_) / kSlab;
+#ifdef MMAN_DIAG
+    DiagLog("mman: CommitRange addr=%p size=0x%zx slabs[%zu..%zu] committedMiB=%zu\n",
+            (void*)addr, size, first, last, (slab_count_ * kSlab) >> 20);
+#endif
     for (size_t i = first; i <= last && i < num_slabs_; i++) {
       if (slab_src_[i] != nullptr) continue;  // already committed
       uintptr_t slab_addr = base_ + i * kSlab;
@@ -266,21 +280,31 @@ class Arena {
       }
       void* src = memalign(kPage, slab);
       if (!src) {
-        DiagLog("mman: DATA slab memalign(0x%zx) failed\n", slab);
+        DiagLog("mman: DATA slab memalign(0x%zx) FAILED at slab %zu "
+                "(committedMiB=%zu) -> returning false (ENOMEM)\n",
+                slab, i, (slab_count_ * kSlab) >> 20);
         return false;
       }
       Result rc = svcMapMemory(reinterpret_cast<void*>(slab_addr), src, slab);
       if (R_FAILED(rc)) {
         DiagLog("mman: DATA slab svcMapMemory FAILED rc=0x%x at=%p size=0x%zx "
-                "(slab %zu)\n", rc, (void*)slab_addr, slab, i);
+                "(slab %zu, committedMiB=%zu) -> returning false (ENOMEM)\n",
+                rc, (void*)slab_addr, slab, i, (slab_count_ * kSlab) >> 20);
         free(src);
         return false;
       }
       std::memset(reinterpret_cast<void*>(slab_addr), 0, slab);
       slab_src_[i] = src;
-      if (++slab_count_ <= 6 || (slab_count_ % 8) == 0) {
+      ++slab_count_;
+#ifdef MMAN_DIAG
+      DiagLog("mman: DATA slab #%u (idx %zu) committed @%p size=0x%zx "
+              "totalCommittedMiB=%zu\n", slab_count_, i, (void*)slab_addr, slab,
+              (slab_count_ * kSlab) >> 20);
+#else
+      if (slab_count_ <= 6 || (slab_count_ % 8) == 0) {
         DiagLog("mman: DATA slab #%u (idx %zu) committed\n", slab_count_, i);
       }
+#endif
     }
     return true;
   }
@@ -331,12 +355,32 @@ class Arena {
   // blocks the in-place W^X flip; see jitflip-poc / PORTING-NOTES). So data
   // pages stay RW once committed. (The code arena's W^X is enforced structurally
   // by the JitType_CodeMemory rx/rw alias split, independent of this path.)
-  void SetPerm(uintptr_t addr, size_t size, u32 perm) {
-    if (base_ == 0 || !Contains(addr, size)) return;
+  // Returns false if a commit was required but could not be backed (slab
+  // memalign / svcMapMemory failure). The caller (mprotect) MUST surface this
+  // to V8 as a failed mprotect (return -1, errno=ENOMEM) so V8's PageAllocator
+  // takes its graceful commit-failure path (GC harder, then catchable OOM)
+  // instead of believing the pages are committed and later faulting on a write
+  // into unbacked address space (the GC marking-barrier Data Abort @ 0x0; see
+  // HEAP-COMMIT-INVESTIGATION.md).
+  bool SetPerm(uintptr_t addr, size_t size, u32 perm) {
+    if (base_ == 0 || !Contains(addr, size)) {
+#ifdef MMAN_DIAG
+      // A commit (RW/R) request for an address NOT in the data arena is
+      // suspicious: it means V8 expects this page backed but we won't commit it
+      // (it'll fault on first write). Log it so we can spot the missing path.
+      if (perm != Perm_None && base_ != 0)
+        DiagLog("mman: SetPerm OUTSIDE arena addr=%p size=0x%zx perm=%u "
+                "(arena %p..%p) -> SKIPPED (will fault on write!)\n",
+                (void*)addr, size, perm, (void*)base_,
+                (void*)(base_ + arena_size_));
+#endif
+      return true;
+    }
     if (perm != Perm_None) {
       // Committing (RW / R). Ensure the slabs are backed.
-      CommitRange(addr, RoundUpPage(size));
+      return CommitRange(addr, RoundUpPage(size));
     }
+    return true;
   }
 
   // Unmap ALL slabs + release the address-space reservation. Required before the
@@ -442,8 +486,14 @@ void* mmap(void* addr, size_t length, int prot, int flags, int fd,
       return MAP_FAILED;
     }
     // MAP_FIXED at an in-arena addr: PROT_NONE = decommit-in-place (no-op, keep
-    // slabs); RW = (re)commit the slabs covering this range.
-    if (prot != PROT_NONE) g_arena.CommitRange(want, RoundUpPage(length));
+    // slabs); RW = (re)commit the slabs covering this range. Surface a commit
+    // failure as MAP_FAILED + ENOMEM (see mprotect / SetPerm rationale) so V8
+    // treats it as an allocation failure rather than faulting later.
+    if (prot != PROT_NONE &&
+        !g_arena.CommitRange(want, RoundUpPage(length))) {
+      errno = ENOMEM;
+      return MAP_FAILED;
+    }
     return addr;
   }
 
@@ -452,7 +502,10 @@ void* mmap(void* addr, size_t length, int prot, int flags, int fd,
   // Read/write mappings reserve + commit immediately.
   void* result =
       (prot == PROT_NONE) ? g_arena.Reserve(length) : g_arena.Allocate(length);
-  if (result == nullptr) return MAP_FAILED;
+  if (result == nullptr) {
+    errno = ENOMEM;
+    return MAP_FAILED;
+  }
   return result;
 }
 
@@ -477,7 +530,16 @@ int mprotect(void* addr, size_t length, int prot) {
   u32 perm = (prot == PROT_NONE) ? Perm_None
              : (prot & PROT_WRITE) ? Perm_Rw
                                    : Perm_R;
-  g_arena.SetPerm(a, length, perm);
+  if (!g_arena.SetPerm(a, length, perm)) {
+    // Commit (svcMapMemory) failed: the arena cannot back these pages. Report
+    // it as an OOM mprotect failure. V8's base::OS::SetPermissions checks the
+    // mprotect return and REQUIRES errno==ENOMEM on failure (otherwise it
+    // CHECK-aborts treating it as a caller bug), so set ENOMEM. This routes V8
+    // into its normal "commit failed -> retry GC -> graceful OOM" path instead
+    // of a Data Abort writing into unbacked memory.
+    errno = ENOMEM;
+    return -1;
+  }
   return 0;
 }
 
@@ -519,6 +581,24 @@ int msync(void* addr, size_t length, int flags) {
 void horizon_mman_set_code_budget(size_t wasm_headroom_mb, size_t max_code_mb) {
   g_wasm_headroom_mb = wasm_headroom_mb;
   g_max_code_mb = max_code_mb;
+}
+
+// Size (bytes) of the DATA arena actually reserved from the STACK region. This
+// is the true ceiling for the V8 heap + ArrayBuffers + all other anonymous
+// allocations on Horizon — it is NOT the process memory grant (svcGetInfo
+// TotalMemorySize), which is much larger than what virtmemFindStack can carve.
+//
+// The embedder should size V8's max heap from THIS value (minus headroom for
+// the slab bookkeeping, ArrayBuffer backing stores, and other native allocs),
+// e.g. max_heap = ReservedSize() - reserve, rather than from the process grant.
+// Configuring a heap larger than this no longer crashes (commit failures are
+// now surfaced as graceful OOM), but it will OOM early; sizing to the arena
+// avoids that. Forces arena init on first call (idempotent thereafter).
+//
+// Returns 0 only if the reservation itself failed (no usable arena).
+size_t horizon_mman_data_arena_size(void) {
+  Lock lk;
+  return g_arena.ReservedSize();
 }
 
 // Release all arena mappings + reservation. Call before the app returns to

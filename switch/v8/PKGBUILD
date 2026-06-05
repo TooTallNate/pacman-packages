@@ -28,7 +28,7 @@ pkgname=switch-v8
 # Newer is better: the consolidated WritableJitAllocation code-write path (our
 # rw/rx redirection chokepoint for Horizon W^X) is most mature on recent trunk.
 pkgver=15.0.243
-pkgrel=6
+pkgrel=9
 pkgdesc="V8 JavaScript engine (full JIT: Sparkplug+TurboFan) for Nintendo Switch / devkitA64"
 arch=('any')
 url='https://v8.dev/'
@@ -146,6 +146,8 @@ prepare() {
     _apply "$srcdir/v8"                     "$p/0006-v8-buildgn-horizon-target-os.patch"
     _apply "$srcdir/v8/third_party/abseil-cpp" "$p/0004-abseil-horizon.patch"
     _apply "$srcdir/v8"                     "$p/0007-v8-string-maxlength-decouple-horizon.patch"
+    _apply "$srcdir/v8"                     "$p/0008-v8-marking-flags-code-page-wx-horizon.patch"
+    _apply "$srcdir/v8"                     "$p/0009-v8-sweeper-skip-code-page-zeroing-horizon.patch"
 
     # Horizon platform backend sources + custom GN toolchain.
     install -d "$srcdir/v8/src/base/platform/horizon"
