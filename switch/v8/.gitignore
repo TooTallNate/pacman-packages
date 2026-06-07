@@ -1,0 +1,8 @@
+# Persistent V8 build tree + depot_tools (huge; never committed). Kept here
+# instead of the OS temp dir so it isn't reclaimed mid-session. $V8_SRC points
+# at v8src/v8 for makepkg/ninja.
+v8src/
+depot_tools/
+# build host shims (CLT-only mac) + gn/ninja symlinks
+fakebin/
+fakexcode/
