@@ -57,6 +57,27 @@ diff --git a/src/threadpool.c b/src/threadpool.c
 index 2a129a5..dfb96de 100644
 --- a/src/threadpool.c
 +++ b/src/threadpool.c
+@@ -238,9 +238,20 @@ static void init_threads(void) {
+   if (uv_sem_init(&sem, 0))
+     abort();
+ 
+   config.flags = UV_THREAD_HAS_STACK_SIZE;
+   config.stack_size = 8u << 20;  /* 8 MB */
+ 
++  /* Horizon (Switch): allow embedders to shrink the per-thread stack.
++   * 8 MB x 4 threads is a desktop default; on a memory-constrained
++   * console (applet mode grants the process ~380 MiB total) committing
++   * 32 MiB of thread stacks at first use can fail outright -> abort().
++   * UV_THREADPOOL_STACK_SIZE is in bytes; uv_thread_create_ex() rounds
++   * up to page size and clamps to the platform minimum. */
++  buflen = ARRAY_SIZE(buf);
++  if (uv_os_getenv("UV_THREADPOOL_STACK_SIZE", buf, &buflen) == 0 &&
++      atoi(buf) > 0)
++    config.stack_size = (size_t)atoi(buf);
++
+   for (i = 0; i < nthreads; i++)
+     if (uv_thread_create_ex(threads + i, &config, worker, &sem))
+       abort();
 @@ -252,7 +252,7 @@ static void init_threads(void) {
  }
  

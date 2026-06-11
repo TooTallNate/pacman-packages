@@ -22,7 +22,7 @@
 
 pkgname=switch-libuv
 pkgver=1.52.1
-pkgrel=2
+pkgrel=3
 pkgdesc='libuv cross-platform asynchronous I/O (adapted for Nintendo Switch homebrew development)'
 arch=('any')
 url='https://libuv.org/'

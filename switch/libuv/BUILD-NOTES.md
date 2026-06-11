@@ -40,6 +40,16 @@ Applied to the upstream `dist.libuv.org` tarball. Eight changes:
   under hbloader. These were the cause of hard crashes inside
   `uv_default_loop()` (signal global init) and the first `uv_queue_work()`
   (thread-pool init) on real hardware.
+- **`src/threadpool.c`** (pkgrel 3): honor a new `UV_THREADPOOL_STACK_SIZE`
+  env var (bytes) in `init_threads`, complementing upstream's
+  `UV_THREADPOOL_SIZE`. Upstream hardcodes 8 MiB per worker stack; with the
+  default 4 workers that is a 32 MiB commit at the FIRST `uv_queue_work()` —
+  which a memory-constrained embedder (Switch applet mode: ~380 MiB process
+  grant, ~168 MiB malloc heap) cannot satisfy, and a failed worker create is a
+  hard `abort()`. Values are rounded up to page size and clamped to the
+  platform minimum by `uv_thread_create_ex`. Embedders should set BOTH env
+  vars before the first async op (nx.js sets 2-4 workers × 1 MiB from its
+  `nxjs.ini` `[threadpool]` section).
 - **`src/uv-common.c`**: disable the `__attribute__((destructor))` on
   `uv_library_shutdown` under `__SWITCH__`. That destructor runs from
   `__libc_fini_array` at process teardown — after a homebrew app has typically
