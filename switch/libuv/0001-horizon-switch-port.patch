@@ -54,13 +54,10 @@ index c6ba419..8841170 100644
  #endif
  
 diff --git a/src/threadpool.c b/src/threadpool.c
-index 2a129a5..dfb96de 100644
+index 2a129a5..d812ee5 100644
 --- a/src/threadpool.c
 +++ b/src/threadpool.c
-@@ -238,9 +238,20 @@ static void init_threads(void) {
-   if (uv_sem_init(&sem, 0))
-     abort();
- 
+@@ -241,6 +241,17 @@ static void init_threads(void) {
    config.flags = UV_THREAD_HAS_STACK_SIZE;
    config.stack_size = 8u << 20;  /* 8 MB */
  
@@ -78,7 +75,7 @@ index 2a129a5..dfb96de 100644
    for (i = 0; i < nthreads; i++)
      if (uv_thread_create_ex(threads + i, &config, worker, &sem))
        abort();
-@@ -252,7 +252,7 @@ static void init_threads(void) {
+@@ -252,7 +263,7 @@ static void init_threads(void) {
  }
  
  
@@ -87,7 +84,7 @@ index 2a129a5..dfb96de 100644
  static void reset_once(void) {
    uv_once_t child_once = UV_ONCE_INIT;
    memcpy(&once, &child_once, sizeof(child_once));
-@@ -261,10 +261,13 @@ static void reset_once(void) {
+@@ -261,10 +272,13 @@ static void reset_once(void) {
  
  
  static void init_once(void) {
